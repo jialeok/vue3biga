@@ -26,7 +26,11 @@ import {
   deviationDetailLine, isDeviationSevere, isDeviationAlert,
   DEV_FORMULA_LINES, DEV_NEED_HINT, DEV_INDEX_NOTE_LINES,
   countSevereTriggers, severeOrdinalText, ABN_TRIGGER_LOOKBACK_DAYS,
-  buildDeviationMap
+  buildDeviationMap,
+  // ★ [DEV-BASIS] 竞价口径 / 收盘口径
+  DEV_CLOSE_HHMM, deviationBasisFor, deviationBasisNote, withIndexFlatLeg, deviationNeedDir,
+  // ★ [DEV-NEG-WARN] 深市 ST 三日阈值
+  DEV_THRESHOLDS_SZ_ST, isStName, thresholdsForStock
 } from './abnormal-deviation.js';
 
 /** 夹具里的腿是紧凑形态 {d,p}（省体积），这里统一转成业务形态 {date,pct} */
@@ -422,8 +426,8 @@ describe('[ABN-DEV] 上屏文案（§21 模板零计算）', () => {
     expect(deviationCalcText({ ok: true, dev10: 50, thr10: 100, stockChain10: null, indexChain10: 1 })).toBe('');
   });
 
-  it('计算公式五条必须与实现的等式逐字一致（算法一改，这里就该红）', () => {
-    expect(DEV_FORMULA_LINES.length).toBe(5);
+  it('计算公式七条必须与实现的等式逐字一致（算法一改，这里就该红）', () => {
+    expect(DEV_FORMULA_LINES.length).toBe(7);
     expect(DEV_FORMULA_LINES[0]).toContain('个股区间涨幅 − 对应指数同期涨幅');
     expect(DEV_FORMULA_LINES[1]).toContain('点差 = 阈值 − 偏离值');
     expect(DEV_FORMULA_LINES[2]).toContain('点差 ÷ (1 + 个股区间涨幅)');
@@ -436,6 +440,16 @@ describe('[ABN-DEV] 上屏文案（§21 模板零计算）', () => {
     expect(DEV_FORMULA_LINES[3]).toContain('窗口每天滚动');
     expect(DEV_FORMULA_LINES[4]).toContain('+1% ⇒ 需涨 +5.5%');
     expect(DEV_FORMULA_LINES[4]).toContain('−2% ⇒ +4.5%');
+    // ★ [DEV-NEG-WARN] ⑥ 负方向必须把阈值写出来，且点差方向反着来
+    expect(DEV_FORMULA_LINES[5]).toContain('−50%');
+    expect(DEV_FORMULA_LINES[5]).toContain('−70%');
+    expect(DEV_FORMULA_LINES[5]).toContain('偏离值 − 阈值');
+    expect(DEV_FORMULA_LINES[5]).toContain('「跌」');
+    // ★ [DEV-TIMES10] ⑦ 官方三条判据要如实交代「本面板只算②③」
+    expect(DEV_FORMULA_LINES[6]).toContain('判据');
+    expect(DEV_FORMULA_LINES[6]).toContain('4 次');
+    expect(DEV_FORMULA_LINES[6]).toContain('只算 ②③');
+    expect(DEV_FORMULA_LINES[6]).toContain('不等于官方一定不认定');
   });
 
   it('🔴 用户质疑「指数也在变，这只是大概推测吧」⇒ β = (1+指数区间涨幅)/(1+个股区间涨幅)', () => {
@@ -858,5 +872,508 @@ describe('[ABN-TRIGGER] 接线锁：默认零耗时，只有面板要才复算',
     expect(css).toContain('.tvrb-dev-trigger-repeat');
     // ⛔ 不许用裁切来「解决」窄屏拥挤
     expect(css).not.toMatch(/\.tvrb-dev-trigger[a-z-]*\s*\{[^}]*overflow:\s*hidden/);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ★ [DEV-BASIS 2026-11-24] 用户原话：「在竞价时间就可以知道它的偏离值看是否触发，所以用竞价口径，
+//   等到收盘，再覆盖下，再计算……分为竞价口径和收盘口径」「再添加一个竞价口径 toggle，我点开的时候，
+//   就可以看到竞价时间的看是否触发，这样我就可以对比收盘口径」。
+//   ⇒ 三件事必须锁死：① 口径判据；② 竞价口径下窗口真的含「今天」；③ 口径文案如实交代算到哪一天（§10）。
+// ════════════════════════════════════════════════════════════════════════════════
+describe('[DEV-BASIS] 竞价口径 / 收盘口径的判据（纯函数，⛔ 不许散落在 composable）', () => {
+  const TODAY = '2026-11-24';
+  const base = { date: TODAY, today: TODAY, asOf: TODAY, hhmm: '09:26' };
+
+  it('复盘历史日 ⇒ 永远收盘口径（§11 稳定复盘，⛔ 不许拿竞价涨幅去改历史）', () => {
+    expect(deviationBasisFor({ ...base, date: '2026-11-21', auctionReady: true,
+      closeLegReady: false, hhmm: '09:26' })).toBe('close');
+    expect(deviationBasisFor({ ...base, date: '2026-11-21', auctionReady: true,
+      closeLegReady: false, hhmm: '10:30' })).toBe('close');
+  });
+
+  it('今天 + 收盘腿已入库 ⇒ 收盘口径（收盘覆盖，与几点无关）', () => {
+    expect(deviationBasisFor({ ...base, auctionReady: true, closeLegReady: true })).toBe('close');
+    // 即便还在 9:26，只要真收盘涨幅已在库里，就用收盘腿
+    expect(deviationBasisFor({ ...base, hhmm: '09:26', auctionReady: true,
+      closeLegReady: true })).toBe('close');
+  });
+
+  it('今天 + 过 15:00 但收盘腿还没落库（16:00 才写）⇒ 收盘口径（靠文案交代）', () => {
+    expect(DEV_CLOSE_HHMM).toBe('15:00');
+    expect(deviationBasisFor({ ...base, hhmm: '15:00', auctionReady: true,
+      closeLegReady: false })).toBe('close');
+    expect(deviationBasisFor({ ...base, hhmm: '15:59', auctionReady: true,
+      closeLegReady: false })).toBe('close');
+    // 边界：14:59 仍算盘中 ⇒ 走竞价口径
+    expect(deviationBasisFor({ ...base, hhmm: '14:59', auctionReady: true,
+      closeLegReady: false })).toBe('auction');
+  });
+
+  it('今天 + 9:25 竞价档就绪 ⇒ 竞价口径（这才是用户要的「早上就能看」）', () => {
+    expect(deviationBasisFor({ ...base, auctionReady: true, closeLegReady: false })).toBe('auction');
+  });
+
+  it('今天 + 竞价档没就绪 ⇒ 【仍是 auction】（[DEV-BASIS-DEFAULT] 没数据 ≠ 换口径）', () => {
+    // 用户第二轮原话：「默认是竞价口径，点开后才变成收盘口径」
+    // ⇒ 09:25:10 那一刻数据还没落库，屏幕该显示「—」+「抓取中」，⛔ 不许偷偷退回昨天的收盘数
+    expect(deviationBasisFor({ ...base, auctionReady: false, closeLegReady: false })).toBe('auction');
+    expect(deviationBasisFor({ ...base })).toBe('auction');
+    // 唯一的换口径出口是「过了 15:00」（收盘）
+    expect(deviationBasisFor({ ...base, auctionReady: false, closeLegReady: false,
+      hhmm: '15:00' })).toBe('close');
+  });
+
+  it('缺日期 ⇒ close（⛔ 不许默认成竞价，那会把历史日算错）', () => {
+    expect(deviationBasisFor({})).toBe('close');
+    expect(deviationBasisFor(null)).toBe('close');
+    expect(deviationBasisFor({ date: '', today: TODAY, auctionReady: true })).toBe('close');
+    expect(deviationBasisFor({ date: TODAY, today: '', auctionReady: true })).toBe('close');
+  });
+
+  it('口径文案必须如实交代「算到哪一天」（§10：口径不符是最坏的错）', () => {
+    // 竞价口径
+    expect(deviationBasisNote({ ...base, basis: 'auction', auctionReady: true }))
+      .toContain('竞价口径');
+    expect(deviationBasisNote({ ...base, basis: 'auction', auctionReady: true }))
+      .toContain('9:25');
+    // 历史日：无需提示
+    expect(deviationBasisNote({ basis: 'close', asOf: '2026-11-21', today: TODAY })).toBe('');
+    // 今天 + 收盘腿已到
+    expect(deviationBasisNote({ ...base, basis: 'close', closeLegReady: true }))
+      .toContain('收盘腿已入库');
+    // 今天 + 过 15:00 还没落库 ⇒ 必须说「截至上一交易日」
+    expect(deviationBasisNote({ ...base, basis: 'close', hhmm: '15:30' }))
+      .toContain('上一交易日');
+    // 今天 + 竞价档没就绪 ⇒ 口径仍是竞价，但必须说清「抓取中」+「不是没有异动」（防误读）
+    const notReady = deviationBasisNote({ ...base, basis: 'auction', hhmm: '09:26',
+      auctionReady: false });
+    expect(notReady).toContain('竞价口径');
+    expect(notReady).toContain('抓取中');
+    expect(notReady).toContain('不是「没有异动」');
+    // 就绪之后 ⛔ 不许还挂着「抓取中」
+    expect(deviationBasisNote({ ...base, basis: 'auction', hhmm: '09:26',
+      auctionReady: true })).not.toContain('抓取中');
+  });
+});
+
+describe('[DEV-AUC-WIN] 竞价口径补腿：指数没有「今天」那根腿时，窗口会静默前移一天', () => {
+  // 用真实夹具：九阳股份 002242，asOf = 2026-11-13（夹具末日）
+  const legs = legsOf('002242');
+  const idxFull = idxOf('002242');
+  const asOf = legs[legs.length - 1].date;
+  const prev = legs[legs.length - 2].date;
+  const daily = new Map();
+  const dayMap = new Map();
+  legs.forEach(function (l) { dayMap.set(l.date, l.pct); });
+  daily.set('九阳股份', dayMap);
+  // 9:25 时点的真实处境：个股有今日腿（竞价涨幅），指数【没有】今日腿
+  const idxNoToday = idxFull.filter(function (x) { return x.date !== asOf; });
+  const codeOf = function () { return '002242'; };
+  const run = function (o) {
+    return buildDeviationMap(Object.assign({
+      names: ['九阳股份'], dailyByStock: daily, codeOf: codeOf
+    }, o)).map.get('九阳股份');
+  };
+
+  it('withIndexFlatLeg：缺则补、有则不覆盖、force 才覆盖、只动 asOf 那一天', () => {
+    const src = [{ date: '2026-11-10', pct: 1 }, { date: '2026-11-11', pct: 2 }];
+    // 缺 asOf ⇒ 补一根 pct=0，且升序
+    const a = withIndexFlatLeg(src, '2026-11-12');
+    expect(a.length).toBe(3);
+    expect(a[2]).toEqual({ date: '2026-11-12', pct: 0 });
+    // 已有 asOf 且 force≠true ⇒ 一根都不动（⛔ 不许悄悄改真收盘涨幅）
+    const b = withIndexFlatLeg(src, '2026-11-11');
+    expect(b.length).toBe(2);
+    expect(b[1].pct).toBe(2);
+    // force=true ⇒ 覆盖成 0（竞价时点指数还没有价格）
+    const c = withIndexFlatLeg(src, '2026-11-11', 0, true);
+    expect(c.length).toBe(2);
+    expect(c.filter(function (x) { return x.date === '2026-11-11'; })[0].pct).toBe(0);
+    // 只动 asOf 那一天：别的日期逐字保留
+    expect(c[0]).toEqual({ date: '2026-11-10', pct: 1 });
+    // §11：不修改入参
+    expect(src.length).toBe(2);
+    expect(src[1].pct).toBe(2);
+    // 脏输入不炸
+    expect(withIndexFlatLeg(null, '2026-11-12')).toEqual([{ date: '2026-11-12', pct: 0 }]);
+    expect(withIndexFlatLeg(src, '')).toEqual(src);
+    // pct 走 numOfText，兼容 DB 的 '+3.21' 文本
+    expect(withIndexFlatLeg(src, '2026-11-12', '+3.21')[2].pct).toBe(3.21);
+  });
+
+  it('🔴 不补腿 ⇒ 今日竞价涨幅被窗口丢掉，数就是【上一交易日】的数（这就是原来那个 bug）', () => {
+    const todayAuc = 5;   // 今日竞价 +5%
+    const stale = run({ indexLegs: new Map([['sz399107', idxNoToday]]), asOf: asOf,
+      todayPctOf: function () { return todayAuc; }, basis: 'auction' });
+    // 上一交易日的真值（指数也没有 asOf 腿 ⇒ 窗口停在 prev）
+    const prevFact = run({ indexLegs: new Map([['sz399107', idxNoToday]]), asOf: prev });
+    expect(stale.dev10).toBeCloseTo(prevFact.dev10, 10);
+    expect(stale.dev30).toBeCloseTo(prevFact.dev30, 10);
+  });
+
+  it('✅ 补腿后（indexTodayFlat）窗口真的含今天：今日 +5% 必须把偏离值顶上去', () => {
+    const todayAuc = 5;
+    const on = run({ indexLegs: new Map([['sz399107', idxNoToday]]), asOf: asOf,
+      todayPctOf: function () { return todayAuc; }, basis: 'auction', indexTodayFlat: true });
+    const off = run({ indexLegs: new Map([['sz399107', idxNoToday]]), asOf: asOf,
+      todayPctOf: function () { return todayAuc; }, basis: 'auction' });
+    // 夹具实测：off dev30=187.99（near）→ on dev30=211.24（severe）
+    //   ⇒ 9:25 不补腿会把「已触发」报成「接近」，这就是用户看不到触发的原因
+    expect(on.dev30).toBeGreaterThan(off.dev30);
+    expect(on.dev10).toBeGreaterThan(off.dev10);
+    expect(off.stage).toBe(DEV_STAGE_NEAR);
+    expect(on.stage).toBe(DEV_STAGE_SEVERE);
+    // 补腿 = 指数按不动计，因此结果必须与「显式把 asOf 那根指数腿写成 pct=0」逐字相等，
+    //   ⛔ 不是「差不多」——差一点就说明还有别的日期被动过
+    const flatIdx = withIndexFlatLeg(idxFull, asOf, 0, true);
+    const anchor = run({ indexLegs: new Map([['sz399107', flatIdx]]), asOf: asOf,
+      todayPctOf: function () { return 5; } });
+    expect(on.dev10).toBeCloseTo(anchor.dev10, 10);
+    expect(on.dev30).toBeCloseTo(anchor.dev30, 10);
+  });
+
+  it('补腿只注入「今日竞价涨幅」，不是别的数（契约锁：⛔ 别再传 10 日区间涨幅）', () => {
+    const mk = function (pct) {
+      return run({ indexLegs: new Map([['sz399107', idxFull]]), asOf: asOf,
+        todayPctOf: function () { return pct; }, basis: 'auction', indexTodayFlat: true });
+    };
+    // 今日涨幅越大，10 日偏离值必须单调递增（若传错的量纲，这条会红）
+    expect(mk(0).dev10).toBeLessThan(mk(5).dev10);
+    expect(mk(5).dev10).toBeLessThan(mk(10).dev10);
+    // taskPct 为 null（当天竞价涨幅没落库）⇒ 不替换末腿，保持收盘腿口径的数（§10 不补 0）
+    const nul = run({ indexLegs: new Map([['sz399107', idxFull]]), asOf: asOf,
+      todayPctOf: function () { return null; }, basis: 'auction' });
+    const close = run({ indexLegs: new Map([['sz399107', idxFull]]), asOf: asOf });
+    expect(nul.dev10).toBeCloseTo(close.dev10, 10);
+  });
+});
+
+describe('[DEV-NEG-WARN] 负方向（杀跌）分档与文案：同一套算法、阈值与方向都反着来', () => {
+  // 合成腿：连续 10 个交易日每日 −6.43%、指数每日 +0.12%
+  //   （真实夹具里没有深跌票，这里只锁「方向语义」，⛔ 不当作行情结论）
+  const days = [];
+  let cur = new Date('2026-11-02T00:00:00Z');
+  for (let k = 0; k < 10; k++) {
+    const d = cur.toISOString().slice(0, 10);
+    days.push(d);
+    cur = new Date(cur.getTime() + 86400000);
+  }
+  const mk = function (pct) {
+    return computeDeviation({
+      code: '002148', name: '北纬科技',
+      stockLegs: days.map(function (d) { return { date: d, pct: pct }; }),
+      indexLegs: days.map(function (d) { return { date: d, pct: 0.12 }; }),
+      asOf: days[days.length - 1]
+    });
+  };
+
+  it('跌到 −50% 的 90% 以内必须进 near（原来判 ok，是漏报）', () => {
+    const f = mk(-6.43);   // dev10 ≈ −49.76，距 −50% 只剩 0.24 点
+    expect(f.dev10).toBeLessThan(-45);
+    expect(f.stage).toBe(DEV_STAGE_NEAR);
+    expect(isDeviationAlert(f)).toBe(true);
+  });
+
+  it('徽标、点差、文案三处都必须是「跌」方向，⛔ 不许出现「再涨」「距 200%」', () => {
+    const f = mk(-6.43);
+    expect(f.badge).toContain('-');
+    expect(f.gapText).toContain('-50%');
+    expect(f.gapText).not.toContain('200%');
+    expect(f.gapText).toContain('再跌');
+    expect(deviationNeedDir(f)).toBe('跌');
+    expect(deviationNeedValueText(f)).toContain('%');
+    expect(deviationNeedValueText(f)).not.toContain('+');
+  });
+
+  it('跌穿 −50% ⇒ severe（负方向的越线判据是 d ≤ 阈值，⛔ 不是 ≥）', () => {
+    const f = mk(-7.0);    // dev10 ≈ −53.9
+    expect(f.dev10).toBeLessThan(-50);
+    expect(f.stage).toBe(DEV_STAGE_SEVERE);
+    expect(f.gapText).toContain('已触发');
+    // ⛔ 不许出现括号套括号：`已触发（10日（跌） -52.8%）`
+    expect(f.gapText).not.toContain('（跌）');
+    expect(f.gapText).toContain('10日');
+    expect(f.gapText).toContain('-5');
+  });
+
+  it('正负候选不许串台：跌的票拿不到 30 日 +200% 那把尺子', () => {
+    const f = mk(-6.43);
+    // dev30 此时 ≈ null（只有 10 根腿），文案必须落在 10 日 / −50% 上
+    expect(f.gapText).not.toContain('+200%');
+    expect(f.gapText).not.toContain('距 200%');
+  });
+});
+
+describe('[DEV-ST] 深市 ST / *ST 三日阈值 ±12%（沪市未核实 ⇒ 不猜）', () => {
+  it('票名识别', () => {
+    expect(isStName('*ST北纬')).toBe(true);
+    expect(isStName('ST海航')).toBe(true);
+    expect(isStName('S*ST前锋')).toBe(true);
+    expect(isStName('退市海润')).toBe(true);
+    expect(isStName(' st 康达')).toBe(true);
+    expect(isStName('北纬科技')).toBe(false);
+    expect(isStName('')).toBe(false);
+    expect(isStName(null)).toBe(false);
+    // ⛔ 别把「ST」出现在中间的名字当 ST
+    expect(isStName('中ST科技')).toBe(false);
+  });
+
+  it('深市 0 开头 + ST ⇒ 三日 ±12%，其余两档与主板同（官方不区分 ST）', () => {
+    const th = thresholdsForStock('main', '002148', '*ST北纬');
+    expect(th.dev3).toBe(12);
+    expect(th.dev10).toBe(100);
+    expect(th.dev30).toBe(200);
+    expect(th.neg10).toBe(-50);
+    expect(th.neg30).toBe(-70);
+    expect(DEV_THRESHOLDS_SZ_ST.dev3).toBe(12);
+  });
+
+  it('沪市 ST ⇒ 不降到 12%（对应条款未核实，§40 不猜数字）', () => {
+    expect(thresholdsForStock('main', '600825', 'ST新华').dev3)
+      .toBe(thresholdsForBoard('main').dev3);
+  });
+
+  it('非 ST ⇒ 与板块阈值逐字相同（零行为变化）', () => {
+    expect(thresholdsForStock('main', '002148', '北纬科技'))
+      .toEqual(thresholdsForBoard('main'));
+    expect(thresholdsForStock('growth', '301313', '凡拓数创'))
+      .toEqual(thresholdsForBoard('growth'));
+    expect(thresholdsForStock('x', '002148', '北纬科技')).toBe(null);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ★ [DEV-BASIS-TOGGLE 2026-11-24] 用户原话：「再添加一个竞价口径 toggle，我点开的时候，
+//   就可以看到竞价时间的看是否触发，这样我就可以对比收盘口径…这两个都要保存起来，
+//   我以后翻开历史日期时，比较方便复盘」
+//   ⇒ 四件事缺一不可：① 两套数一次算好都留着（不是点了再取数）；② 切换是纯切换；
+//     ③ 视图真的接上按钮 + emit；④ 收盘后能绕过 9:25 的读缓存重新取真收盘腿。
+// ════════════════════════════════════════════════════════════════════════════════
+describe('[DEV-BASIS-TOGGLE] 竞价口径 toggle 的全链路（源码锁：断开任一环，这里该红）', () => {
+  const comp = readFileSync('src/composables/useAbnormalDeviation.js', 'utf8');
+  const board = readFileSync('src/composables/useTopicVolRatioBoard.js', 'utf8');
+  const view = readFileSync('src/views/TopicVolRatioBoard.vue', 'utf8');
+  const vue = readFileSync('src/components/topicvolratio/TvrbDeviationBoard.vue', 'utf8');
+  const css = readFileSync('src/assets/css/topic-vol-ratio-board.css', 'utf8');
+  const daily = readFileSync('src/data/stock-daily-pct.js', 'utf8');
+
+  it('两套口径一次算好、都留着（⛔ 不许「点了再取数」——那样切一次就要等一次网络）', () => {
+    expect(comp).toContain('mapClose');
+    expect(comp).toContain('mapAuc');
+    expect(comp).toContain('basis.value === \'auction\' ? mapAuc.value : mapClose.value');
+    // 竞价那套必须带 indexTodayFlat（否则今日竞价涨幅被窗口丢掉，见 [DEV-AUC-WIN]）
+    expect(comp).toContain('indexTodayFlat: true');
+    expect(comp).toContain('basis: \'auction\'');
+    expect(comp).toContain('basis: \'close\'');
+  });
+
+  it('竞价那套的今日涨幅直接读 auc_pct_chg（⛔ 不许再传 10 日区间涨幅）', () => {
+    expect(comp).toContain('_readAucPctMap');
+    expect(comp).toContain('readMarketMetricsForDate');
+    expect(comp).toContain('auc_pct_chg');
+    // 历史留下的错误契约：todayPctOf 取 buyRangeMap.pct（10 日区间涨幅）。
+    //   ⚠️ 注释里仍会提到它（讲清踩过什么坑），所以只锁【代码里有没有再用】
+    expect(comp).not.toMatch(/todayPctOf:\s*buyRangeMap/);
+    // 正确契约：todayPctOf 只从竞价涨幅 Map 里取
+    expect(comp).toMatch(/todayPctOf:\s*function \(n\) \{\s*const v = aucMap\.get/);
+  });
+
+  it('切换是纯切换：setBasis 不再取数（零请求）', () => {
+    expect(comp).toContain('function setBasis');
+    expect(comp).toContain('function toggleBasis');
+    expect(comp).toContain('setBasis(basis.value === \'auction\' ? \'close\' : \'auction\')');
+    // setBasis 体内不许出现任何取数调用
+    const body = comp.slice(comp.indexOf('function setBasis'), comp.indexOf('function toggleBasis'));
+    expect(body).not.toContain('await ');
+    expect(body).not.toContain('load(');
+  });
+
+  it('收盘后必须绕过 9:25 的读缓存，否则切到收盘口径还是旧数', () => {
+    // ★ [PERF-DEV] 但只绕到「第一次确认今天收盘腿已入库」为止（见 [PERF-DEV] 那组）
+    expect(comp).toContain('const fresh = isToday && hhmm >= DEV_CLOSE_HHMM && !_closeSeen.has(asOf)');
+    // 数据层真的实现了 fresh（精确命中 + 覆盖命中 + inflight 三条都要让路）
+    expect(daily).toContain('opts.fresh');
+    expect(daily).toContain('_subCache');
+  });
+
+  it('面板把 toggle 接上了（按钮 + emit + 板层 handler + 视图绑定）', () => {
+    expect(vue).toContain('tvrb-dev-basis-btn');
+    expect(vue).toContain('@click="$emit(\'toggle-basis\')"');
+    expect(vue).toContain('defineEmits([\'toggle-basis\'])');
+    expect(vue).toContain(':disabled="!meta.canToggle"');
+    expect(board).toContain('function toggleDeviationBasis');
+    expect(board).toContain('canToggle:');
+    expect(view).toContain('@toggle-basis="toggleDeviationBasis"');
+    expect(view).toContain('toggleDeviationBasis');
+    // 样式：窄屏允许折行，⛔ 不许用裁切解决拥挤（[DEV-LAYOUT]）
+    expect(css).toContain('.tvrb-dev-basis-row');
+    expect(css).toContain('.tvrb-dev-basis-btn.is-on');
+    expect(css).not.toMatch(/\.tvrb-dev-basis[a-z-]*\s*\{[^}]*overflow:\s*hidden/);
+  });
+
+  it('口径变了要重算一次（version 进 watch 键），否则收盘覆盖后仍是早上那屏', () => {
+    expect(board).toContain('version.value');
+    expect(board).toContain('_reloadDeviation');
+    // 口径判据只允许在 Logic 层，⛔ 板层不许自己判 hhmm >= '15:00'
+    expect(board).not.toContain('>= DEV_CLOSE_HHMM');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ★★ [DEV-BASIS-DEFAULT 2026-11-24 第二轮用户当场纠正 —— toggle 语义做反了]
+//   「我说默认打开时是竞价口径，现在怎么又是收盘口径，竞价口径要点一次才是变成竞价口径？
+//     我的意思是不用点竞价口径，默认是竞价口径，点开后才变成收盘口径。
+//     你应该把竞价口径 toggle 变成收盘口径，我想看收盘口径时点开就可以看了。」
+//
+//   ⇒ 语义：**按钮 = 收盘口径**（想复盘才点）；不点 = 默认竞价口径（早上 9:25 一眼看到的那屏）。
+//     上一版把按钮叫「竞价口径」、默认高亮、点一下才切到竞价 —— 正好做反。
+//     这组锁住三件：① 按钮文字 ② 高亮判据 ③ 用户点过之后不许被行情刷新弹回去。
+// ════════════════════════════════════════════════════════════════════════════════
+describe('[DEV-BASIS-DEFAULT] 默认竞价口径、按钮叫「收盘口径」（源码锁：改反了这里该红）', () => {
+  const vue = readFileSync('src/components/topicvolratio/TvrbDeviationBoard.vue', 'utf8');
+  const board = readFileSync('src/composables/useTopicVolRatioBoard.js', 'utf8');
+  const comp = readFileSync('src/composables/useAbnormalDeviation.js', 'utf8');
+
+  it('按钮文字必须是「收盘口径」，⛔ 不许写成「竞价口径」', () => {
+    // 只锁模板里那颗按钮的可见文字（注释里讲历史时会提到「竞价口径」）
+    const i = vue.indexOf('tvrb-dev-basis-btn');
+    const btn = vue.slice(i, i + 900);
+    expect(btn).toContain('收盘口径');
+    // 按钮自己的文字里不许出现「竞价口径」
+    const text = btn.slice(btn.indexOf(':disabled'), btn.indexOf('</button>'));
+    expect(text).not.toContain('竞价口径');
+  });
+
+  it('高亮（is-on）由 closeView 判 —— 默认不高亮 = 默认就是竞价口径', () => {
+    expect(vue).toContain(":class=\"meta.closeView ? 'is-on' : ''\"");
+    // ⛔ 不许再拿 auctionView 判高亮（那等于默认高亮竞价，语义反了）
+    expect(vue).not.toMatch(/:class="meta\.auctionView\s*\?\s*'is-on'/);
+    // 板层必须提供 closeView
+    expect(board).toContain('closeView: !isAuc');
+    expect(board).toContain('closeView');
+  });
+
+  it('两个方向的悬停文案都得说清「现在是哪个口径 / 点一下会变成哪个」', () => {
+    expect(board).toContain('当前：竞价口径（默认');
+    expect(board).toContain('当前：收盘口径');
+    // 默认这条必须写明「点一下看收盘口径（复盘用）」
+    expect(board).toMatch(/当前：竞价口径（默认[^']*收盘口径/);
+  });
+
+  it('早盘数据没到 ⇒ 文案是「抓取中 / 到货自动出数」，⛔ 不是「换个口径」', () => {
+    expect(board).toContain('9:25 竞价涨幅还在抓取中');
+    expect(board).toContain('到货自动出数');
+    expect(board).toContain('要看收盘口径就点上面的「收盘口径」');
+  });
+
+  it('用户点过口径 ⇒ 记进 _userBasis，当天行情刷新（version++）不许把他弹回去', () => {
+    expect(comp).toContain('const _userBasis = new Map()');
+    // setBasis 必须记录
+    const setBody = comp.slice(comp.indexOf('function setBasis'), comp.indexOf('function toggleBasis'));
+    expect(setBody).toContain('_userBasis.set(d, v)');
+    // 展示口径 = 用户选择优先，否则跟自动判据
+    expect(comp).toContain('const shownBasis = _userBasis.get(asOf) || autoBasis');
+    // ⛔ 不许「自动判据一变就把用户的选择作废」——否则 16:30 之后想看竞价口径对比，
+    //   一次行情刷新就弹回收盘，「翻开历史日期比较复盘」也就成了一次性动作
+    expect(comp).not.toContain("if (autoBasis === 'close') _userBasis.delete(asOf)");
+    // 面板上的口径 + 数字都必须用 shownBasis，⛔ 不许一半自动一半用户
+    expect(comp).toContain('basis.value = shownBasis');
+    expect(comp).toContain('basis: shownBasis');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ★★ [DEV-AUC-WAIT 2026-11-24 用户原话]
+//   「那个官方偏离值竞价口径是默认打开的（默认是竞价口径数值），这样早上我就能一眼看到竞价口径
+//     进行选股判断……也就是早上 9 点 25 分左右，我就可以看到的是竞价口径，而不是昨天的收盘口径，
+//     这个很重要。收盘口径只是复盘用。」
+//
+// 真实时点取证（11-24 `bidding_fetch_log`）：09:25:05 起抓、09:25:32 morning 收工、
+// 09:26:39 ladder26、09:27:25 snapshot 补量比 ⇒ **auc_pct_chg 在 09:25:35 之后才在库里**。
+// ⇒ 「9:25:10 就打开页面」那次，收盘口径是【数据还没到】而不是【判据错了】，
+//   所以必须有「到货即切」的有界重试；否则会一直停在昨天的收盘数。
+// ════════════════════════════════════════════════════════════════════════════════
+describe('[DEV-AUC-WAIT] 早盘默认竞价口径 + 到货即切（源码锁：断开任一环这里该红）', () => {
+  const comp = readFileSync('src/composables/useAbnormalDeviation.js', 'utf8');
+
+  it('竞价窗口内、竞价档没就绪 ⇒ 有界重试（⛔ 不许常驻轮询）', () => {
+    expect(comp).toContain('AUC_WAIT_MS');
+    expect(comp).toContain('AUC_WAIT_MAX');
+    expect(comp).toContain('AUC_WINDOW_FROM');
+    expect(comp).toContain('function _scheduleAucWait');
+    expect(comp).toContain('function _stopAucWait');
+    // 触发条件必须三个都在：竞价窗口内 + 竞价档没就绪 + 收盘腿也没到
+    expect(comp).toContain('inAucWindow && !aucReady && !closeLegReady');
+    // ⛔ 不许 setInterval 常驻
+    expect(comp).not.toContain('setInterval');
+    // 上限必须写死（15 次 × 12s ≈ 3 分钟），超出就停
+    expect(comp).toMatch(/AUC_WAIT_MAX\s*=\s*\d+/);
+  });
+
+  it('重试时不许把面板打回「读取中…」（否则每 12 秒闪一次）', () => {
+    expect(comp).toContain('quiet');
+    expect(comp).toContain('opt.quiet !== true');
+    expect(comp).toContain('{ quiet: true }');
+  });
+
+  it('清空/切日期必须掐掉重试（⛔ 不许后台继续跑）', () => {
+    const body = comp.slice(comp.indexOf('function clear()'), comp.indexOf('function clear()') + 400);
+    expect(body).toContain('_stopAucWait()');
+  });
+
+  it('数据一就绪就停：竞价档就绪 / 收盘腿到了 / 非今天 都不等', () => {
+    expect(comp).toContain('} else {');
+    expect(comp).toContain('_stopAucWait();');
+    // 历史日永远不等（复盘不需要等今日竞价）
+    expect(comp).toContain('const inAucWindow = isToday && hhmm >= AUC_WINDOW_FROM');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ★ [PERF-DEV 2026-11-24 用户报障「题材量比的响应速度有些变慢了，你主要看上次的修改是否拖慢」]
+//   真实链路计时（node 直连真库，14 只票）：
+//     冷启动  4733ms / 11 请求 → 2162ms / 3 请求（8 个腾讯 501 消失 + 并行化）
+//     热重算   545ms /  1 请求 →   17ms / 0 请求（auc 按日缓存 + daily/index 缓存命中）
+// ════════════════════════════════════════════════════════════════════════════════
+describe('[PERF-DEV] 重算必须 0 额外请求（会话内一次读取、反复重算）', () => {
+  const comp = readFileSync('src/composables/useAbnormalDeviation.js', 'utf8');
+  const daily = readFileSync('src/data/stock-daily-pct.js', 'utf8');
+  const idx = readFileSync('src/data/index-daily-pct.js', 'utf8');
+
+  it('竞价涨幅按日缓存，且【空结果不缓存】（9:25 还没落库要能重试）', () => {
+    expect(comp).toContain('_aucPctCache');
+    expect(comp).toContain('function _putAucCache');
+    expect(comp).toContain('if (!date || !(m instanceof Map) || m.size === 0) return');
+    expect(comp).toContain('const hit = _aucPctCache.get(d)');
+  });
+
+  it('fresh 只绕到「第一次确认今天收盘腿入库」为止（否则等于把缓存删了）', () => {
+    expect(comp).toContain('_closeSeen');
+    expect(comp).toContain('!_closeSeen.has(asOf)');
+    expect(comp).toContain('if (closeLegReady) _closeSeen.add(asOf)');
+    expect(daily).toContain('opts.fresh');
+  });
+
+  it('竞价涨幅与个股腿并行发（互不依赖，⛔ 别串行等）', () => {
+    expect(comp).toContain('const aucPromise = _readAucPctMap(asOf)');
+    expect(comp).toContain('const aucMap = await aucPromise');
+    // ⛔ 不许又回到「先 await daily 再读 auc」
+    expect(comp).not.toContain('await _readAucPctMap(asOf);');
+  });
+
+  it('只取这批票真正用到的对应指数（不是 4 只全取）', () => {
+    expect(comp).toContain('idxCodes');
+    expect(comp).toContain('readIndexLegsForDates(dates, idxCodes.length ? { codes: idxCodes } : {})');
+  });
+
+  it('腾讯兜底熔断：整批失败后 10 分钟内不再打（⛔ 每片都白打 8 个 501）', () => {
+    expect(idx).toContain('_qtCooldownUntil');
+    expect(idx).toContain('QT_FAIL_COOLDOWN_MS');
+    expect(idx).toContain('indicesNeedingQt');
+    // 旧判据（拿条数比日期数 ⇒ 前缀缺口恒为真）必须已经从【代码】里消失。
+    // ⚠️ 注释里仍会写它（讲清踩过什么坑），所以只锁「有没有再这样算」。
+    expect(idx).not.toMatch(/const need = DEV_INDEX_CODES\.filter/);
+    expect(idx).toContain('const need = indicesNeedingQt(wantCodes, map, horizon)');
   });
 });

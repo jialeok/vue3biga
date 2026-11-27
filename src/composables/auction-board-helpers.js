@@ -7,7 +7,7 @@
 
 import { getStockHistoryTopics } from '../logic/stocks/stocks.js';
 import { getTopicRankCountThisWeek, isPseudoTopic, getHiddenTopicTokensForDate } from '../logic/topic/rules.js';
-import { filterHiddenTopicText } from '../logic/topic/temp-core-topic.js';
+import { filterHiddenTopicText, filterHiddenNoteTopics } from '../logic/topic/temp-core-topic.js';
 // [SUSPEND 2026-10-13] 当日停牌：题材页「涨幅」列原本对停牌票显示 '-'，与「没抓到数据」
 // 无法区分。判定唯一实现在 logic/auction/suspend.js（同花顺 fuyao，免费/不限量），
 // 这里只同步读取结果用于展示，不做判定、不发请求。
@@ -181,11 +181,20 @@ export function _normalizeNotePunct(note) {
 
 /**
  * 在基础备注上补全题材（回退共享题材库），返回完整备注文本。
+ *
+ * ★★ [TEMP-CORE-SCOPE 2026-11-27 用户口径] 第三参 date：
+ *   双击竞价量的备注框、单击昨日成交量的黑色 toast 都走本函数，它们以前直接吐原始
+ *   note / 题材库文本 ⇒ 11-18 才建的临时词「羊字辈」出现在 11-12 的备注里
+ *   （note 是 11-18 打标时回灌进去的，题材库又是一票一行跨日期共享）。
+ *   ⇒ 取完文本后按【该行所属交易日】把「当天不生效的临时词」从括号题材段里摘掉；
+ *   ⛔ 只过滤显示文本，note / stock_topics 一个字不动（§11）。
+ *
  * @param {object} item
  * @param {string} baseNote
+ * @param {string} [date] 该行所属交易日；不传 ⇒ 取当前展示日
  * @returns {string}
  */
-export function _buildFullNoteWithTopics(item, baseNote) {
+export function _buildFullNoteWithTopics(item, baseNote, date) {
     let note = _normalizeNotePunct(baseNote);
     if (!note.includes('(') && item && item.stock) {
         try {
@@ -200,5 +209,11 @@ export function _buildFullNoteWithTopics(item, baseNote) {
             }
         } catch (e) {}
     }
-    return note;
+    let d = String(date || '').trim();
+    if (!d) {
+        try { d = String(useUiStore().currentDate || '').trim(); } catch (e) { d = ''; }
+    }
+    if (!d) return note;
+    const hidden = getHiddenTopicTokensForDate(d);
+    return hidden && hidden.size > 0 ? filterHiddenNoteTopics(note, hidden) : note;
 }

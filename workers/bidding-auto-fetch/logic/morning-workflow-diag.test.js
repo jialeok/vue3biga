@@ -23,7 +23,9 @@ const AT = SRC.indexOf('export async function runMorning');
 const HELPERS = SRC.slice(0, AT);          // fetchAndWriteWatchlist 等辅助函数
 const RUN_MORNING = SRC.slice(AT);         // runMorning 是文件里最后一个顶层函数
 
-const GROUP_B_LOCALS = ['prevWlRes', 'todayWlRes', 'tagRes', 'dragonRes', 'range20Res'];
+// [R30-FETCH 2026-11-23] 组B 扩到 6 路（新增 range30Res）—— 新局部变量必须同步进这份黑名单，
+//   否则「runMorning 里误引用组B 局部变量」这条守卫对新增的 30 日那一路就失效了。
+const GROUP_B_LOCALS = ['prevWlRes', 'todayWlRes', 'tagRes', 'dragonRes', 'range20Res', 'range30Res'];
 
 describe('9:25 组B 诊断的跨函数契约（防 ReferenceError 整轮崩）', () => {
   it('① runMorning 存在且是文件最后一个顶层函数（切片前提成立）', () => {

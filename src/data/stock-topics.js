@@ -647,3 +647,53 @@ import { state } from '../logic/app-state.js';
             }
             state._topicCacheLastInvalidateTs = __now;
         }
+
+        // ══════════════════════════════════════════════════════════════════════════════
+        // ★★ [HOT-TOPIC-SYNC 2026-11-25] hot 派生题材缓存的【统一重建入口】
+        //
+        // 事故（用户原话）：「那只原尚股份开始题材那里显示 -（刷新的时候），后面又变成了跨境电商
+        //   （大消费的题材），所以才增加一只变成 4 只，为什么它显示那么慢呢？导致题材量比选股侧
+        //   变来变去。」
+        //
+        // 整类根因（不是原尚一只票）：
+        //   ① 有些股票的题材【只】存在于 hot_stocks.note 里（如原尚股份 07-31 的
+        //      `摘帽+汽车物流+跨境电商+氢能源`），`stock_topics` 库与当日 `auction_watchlist`
+        //      都没有它 ⇒ 只有 `buildTopicCache()` 扫 `state._hotAuctionData` 才能拿到。
+        //   ② 但题材缓存 `buildTopicCache()` 是【幂等】的（built 后直接返回），而启动早期
+        //      `rules.js#getTopicGroups` 会在 hot 数据到货【之前】首次建缓存 ⇒ 那一刻扫不到 hot
+        //      note ⇒ 该票题材显示 '-'。
+        //   ③ hot 数据到货后，启动/Realtime 两条路径原来都只 `_emit('auction-refresh')`，
+        //      ⛌ 没有 invalidate+build ⇒ 缓存永久缺这批题材，直到某个【无关的】invalidate
+        //      （题材库 Realtime、手动点云朵、再次登录）偶然重建才出现 ⇒ 这就是「显示那么慢」。
+        //   ④ 买点定稿门控原来只等 `stock_topics` 库（题材库），不等 hot 派生题材 ⇒ 在题材还是
+        //      '-'（大消费 3 只、无九阳股份）时就定稿冻结；hot 到货重建后又触发重算（4 只）
+        //      ⇒ 这就是「变来变去」。
+        //
+        // 修复契约（§6 单一数据源 / §32 不重复请求）：
+        //   · 所有 hot 到货路径统一调用本函数（启动 useAppBootstrap + Realtime hot-stocks-realtime），
+        //     ⛔ 不要在调用点各写一遍 invalidate+build。
+        //   · 必须【先 invalidate 再 build】：单独 build 因幂等无效（rules.js:627 就是反例）。
+        //   · 建完立刻置 `state._hotDerivedTopicsReady=true`（reactive，买点门控可追踪）——
+        //     这是「一次性里程碑」标志：只在 hot 数据到货并重建后置位，⛌ 不要在
+        //     `invalidateTopicCache` 里复位，否则任何无关 invalidate 都会让买点重新挂起、
+        //     永久锁死。之后其它看板手动 invalidate+build 时缓存本就含 hot 题材，标志保持 true 正确。
+        //   · hot 读取失败（表不可用 / 空库）同样要置位：§10「读过就算落地」，
+        //     ⛌ 不能因为一次读失败把买点侧永久挂死；读不到时题材如实为空。
+        // ══════════════════════════════════════════════════════════════════════════════
+        export function rebuildTopicCacheForHotData() {
+            try {
+                invalidateTopicCache();
+                buildTopicCache();
+            } finally {
+                // 无论成功失败都置里程碑标志（§10：读过就算落地）
+                state._hotDerivedTopicsReady = true;
+            }
+        }
+
+        /**
+         * hot 派生题材是否已并入缓存（买点定稿门控第⑱项的 Data 层判据，§6 单一真相）。
+         * 读的是 reactive state 字段 ⇒ computed 可建立依赖，标志一置位就自动重算。
+         */
+        export function isHotDerivedTopicsReady() {
+            return state._hotDerivedTopicsReady === true;
+        }

@@ -7,7 +7,7 @@
 //   以及几个排名表读取小件（_range10RankMapOf / _closeRankOf / _rankTopEntries ...）。
 
 import { numOfText } from '../util/num-text.js';
-import { NEW_DRAGON_LOOKBACK_DAYS } from './tvrb-constants.js';
+import { NEW_DRAGON_LOOKBACK_DAYS, NO_BUY_ACTION_TAGS } from './tvrb-constants.js';
 
 import { totalDragonLabel } from '../auction/range20-top5-label.js';
 import { buildRange10Ranked } from './range10-backup.js';
@@ -70,6 +70,196 @@ export function _sameTopicLoose(a, b, coreRes) {
   const xs = split(x);
   const ys = split(y);
   return xs.some(function(sx) { return ys.some(function(sy) { return sy === sx; }); });
+}
+
+/**
+ * ★★ [EBB-TOPIC-TEMP 2026-11-27 用户口径] 二次确认退潮的【禁买词集合】取材（§6 唯一实现）。
+ *
+ * 用户原话（11-27 第三次更正，逐字）：
+ *   「二次确认退潮你看总龙原来是什么题材，说明之前那个题材退潮，是不能买的吧？还有一点，你还要看
+ *     总龙有没有临时题材刚好在这个时间节点建立，如果有那么这个临时题材和票也受到牵连，是不能选的……
+ *     要牵连到大类的，也就是核心词农业包含的同义词都灰掉，不单是题材灰，包含的股票也是要灰的，
+ *     其它题材可以选进，但是如果选进的股票涉及到退潮的题材的字窜，也会变灰，这是一类规律，不是个别情况。」
+ *
+ * ⇒ 禁买词集合 = ① 总龙【原有题材】（`ebb.leaderTopic`，经核心词归一大类）
+ *              ∪ ② 当日【生效】的临时题材词里，总龙题材串里**确实沾着**的那几个（11-16 实测 = 东方）。
+ *
+ * 🔴 为什么必须有 ②：11-16 落库 `leader_topic = 水产品`（归一后 = 农业），而日出东方的题材串是
+ *   `家电,热泵,东方` —— 只取 ① 的话「东方」不在集合里 ⇒ 该票不灰（用户报的就是这个）。
+ *
+ * ⛔ 取不到总龙题材串 / 临时词表 ⇒ ② 一律为空（§10 判不出就不牵连，宁可只按 ① 判）；
+ * ⛔ 不在这里做「命中哪只票」的判定（那是 `makeEbbTopicBan().test` 的事，两件事分开）。
+ *
+ * @param {string} ebbTopic 总龙原有题材（退潮行落库的那个题材串）
+ * @param {string} leaderTopicsRaw 总龙自己的题材串（调用方已按【展示日】隔离过临时词）
+ * @param {string[]} tempTokens 当日生效的临时题材词（`getTempCoreWindowsForDate(date)` 的 name + synonyms）
+ * @param {(raw:string)=>string} [coreRes] 大类归一函数
+ * @returns {{topics:string[], tempTopics:string[]}} topics = 喂给 `makeEbbTopicBan` 的词（原有在前），
+ *          tempTopics = 其中来自临时题材牵连的那几个（供文案点名）
+ */
+export function ebbBanTopicsOf(ebbTopic, leaderTopicsRaw, tempTokens, coreRes) {
+  const out = { topics: [], tempTopics: [] };
+  const push = function(arr, t) {
+    const s = String(t === null || t === undefined ? '' : t).trim();
+    if (!s) return;
+    if (out.topics.indexOf(s) < 0) { out.topics.push(s); arr.push(s); }
+  };
+  push([], ebbTopic);
+  // 总龙题材串逐段归一 —— 与 `makeEbbTopicBan.test` 同一把尺子（大类归一）
+  const segs = String(leaderTopicsRaw === null || leaderTopicsRaw === undefined ? '' : leaderTopicsRaw)
+    .split(/[,，/、+;；|]/).map(function(s) { return s.trim(); }).filter(Boolean);
+  const segNorm = segs.map(function(s) { return _normTopic(s, coreRes); }).filter(Boolean);
+  if (segNorm.length === 0) return out;
+  (Array.isArray(tempTokens) ? tempTokens : []).forEach(function(tk) {
+    const n = _normTopic(String(tk === null || tk === undefined ? '' : tk).trim(), coreRes);
+    if (!n) return;
+    if (segNorm.indexOf(n) < 0) return;              // 总龙不沾这个临时词 ⇒ 不牵连
+    push(out.tempTopics, tk);
+  });
+  return out;
+}
+
+/**
+ * ★★ [EBB-TOPIC-MEMBER 2026-11-27 · 第二十六条粒度细化] 退潮题材的【票级】判据。
+ *
+ * 用户报障（11-16 实证）：「二次确认退潮了，你看退潮的是哪个题材，那个题材中包含哪些题材字段，
+ *   有包含这些题材字段的股票当天都不能选进题材量比选股买点侧」。
+ * 旧口径只做【块级】排除（`_sameTopicLoose(b.topic, ebbSecondTopic)`）⇒ 只踢掉名字叫「东方」的题材块；
+ * 日出东方的题材串是 `家电,热泵,东方`，被归进「大消费」块（家电与大消费同义）⇒ 块名不是东方 ⇒ 放行。
+ * 本函数把判据细到【题材字段】：
+ *   · 退潮题材 T（如「东方」）先按同类分隔符切段、逐段过 `_normTopic`（大类归一，与判定同一把尺子）；
+ *   · 某票的题材串逐段同样归一后与 T 的任一段相等 ⇒ 命中（该票当天不进买点侧）。
+ *
+ * ⛔ 取不到题材串（没注入 `topicsOf` / 该票无题材）一律判【不命中】——
+ *    §10：判不出就不许替用户排除股票，宁可保留原结论。
+ *
+ * @param {string|string[]} ebbTopics 退潮题材串（已由 `ebbBanTopicsOf` 拼好：原有题材 + 临时题材牵连词）
+ * @param {(name:string)=>string} topicsOf 票名 ⇒ 题材串（由组合式按【展示日】隔离临时题材词后注入）
+ * @param {(raw:string)=>string} [coreRes] 大类归一函数
+ * @returns {{topics:string[],tokens:string[],segmentOf:(n:string)=>string,rawTopicsOf:(n:string)=>string,test:(n:string)=>boolean}|null}
+ *          判不出 / 无退潮题材 ⇒ null（调用方据此保持原口径）
+ */
+export function makeEbbTopicBan(ebbTopics, topicsOf, coreRes) {
+  const splitSegs = function(s) {
+    return String(s || '').split(/[,，/、+;；|]/).map(function(seg) { return seg.trim(); }).filter(Boolean);
+  };
+  const list = (Array.isArray(ebbTopics) ? ebbTopics : [ebbTopics])
+    .map(function(t) { return String(t === null || t === undefined ? '' : t).trim(); })
+    .filter(Boolean);
+  if (!list.length || typeof topicsOf !== 'function') return null;
+  const tokens = [];
+  list.forEach(function(t) {
+    splitSegs(_normTopic(t, coreRes) || t).forEach(function(seg) {
+      const s = _normTopic(seg, coreRes);
+      if (s && tokens.indexOf(s) < 0) tokens.push(s);
+    });
+  });
+  if (!tokens.length) return null;
+  // 单次调用的题材串缓存：同一天同一只票会被多个通道反复问（块内说明 / 候选过滤 / 收口各问一次）
+  const cache = new Map();
+  function segsOf(name) {
+    const key = String(name === null || name === undefined ? '' : name);
+    if (cache.has(key)) return cache.get(key);
+    let raw = '';
+    try { raw = String(topicsOf(key) || ''); } catch (e) { raw = ''; }
+    const segs = raw ? splitSegs(raw) : [];
+    cache.set(key, segs);
+    return segs;
+  }
+  function segmentOf(name) {
+    const segs = segsOf(name);
+    for (let i = 0; i < segs.length; i++) {
+      const n = _normTopic(segs[i], coreRes);
+      if (n && tokens.indexOf(n) >= 0) return segs[i];
+    }
+    return '';
+  }
+  return {
+    topics: list.slice(),
+    tokens: tokens.slice(),
+    segmentOf: segmentOf,
+    rawTopicsOf: function(name) { return segsOf(name).join(','); },
+    test: function(name) { return !!segmentOf(name); },
+  };
+}
+
+/**
+ * ★★ [LEADER-TIMELINE 2026-11-27 用户口径·三修] 事件轴上【每个事件的判定依据】（§6 唯一来源）。
+ *
+ * 用户原话：「判断标准，你也写进去，比如首次分歧，判断依据是什么？每个事件都写下依据」。
+ *
+ * ⛔ 这里的每一条都必须能在代码里找到同一句话（不许自己编阈值）：
+ *   · 首次分歧 ⇒ `leader-divergence.js` 文件头「② 首次分歧时间 = 首板日（含）之后第一个【竞价涨幅 < 0】的日子」（第二十五条）
+ *   · 首次退潮 ⇒ `detectEbbDay` 判据①②「总龙一停牌 / 竞价占比不达标」，门槛走 auction-share 的 3.5% 龙头线；
+ *     外加闸门 A（同题材前十 ≥3 只，否则算轮动）与闸门 B（总龙前两日都涨停，否则算趋势）（第二十条）
+ *   · 二次确认退潮 ⇒ 事件计数「近 20 个交易日、同题材退潮【事件】第 2 次；连续多日只算一次；≥2 次即无第三次」（第二十七条）
+ *   · 切换日 ⇒ 「二次确认退潮后第 2 个交易日」（第二十八条）
+ * ⛔ 纯文案常量：不参与任何判定（§4 / §11）。
+ */
+export const LEADER_EVENT_BASIS = '〔依据〕首次分歧：总龙一首板之后、第 1 个【竞价涨幅 < 0】的交易日（第二十五条；只认本龙自己的数据，取不到留「—」）' +
+  '｜首次退潮：总龙一【停牌】或【竞价占比不到 3.5% 龙头线】，且同题材前十 ≥3 只、前两日都涨停（第二十条；否则算轮动 / 趋势，不报退潮）' +
+  '｜二次确认退潮：近 20 个交易日、同题材退潮【事件】的第 2 次（连续多日只算一次；第二次之后「无第三次」，第二十七条）' +
+  '｜切换日：二次确认退潮后第 2 个交易日（第二十八条）';
+/**
+ * ★★ [LEADER-TIMELINE 2026-11-27 用户口径] 第二十八条说明【上方】的「总龙一事件轴」小表（§6 唯一实现）。
+ *
+ * 用户原话：「你应该在28条说明上面标有总龙一的事件，包含题材，首次分歧，首次退潮，二次确认退潮等，
+ *   没有三次退潮，你看下顺序怎么安排，做下记录。做一个时间历史事件小表在上面节省空间为准，
+ *   这样我一看就知道，更加清晰」
+ *
+ * 输出固定【一行】（省空间），顺序 = 时间顺序：
+ *   〔事件轴〕东方海洋 题材=羊字辈（退潮登记=水产品）：首次分歧 11-04 → 首次退潮 11-10
+ *   → 二次确认退潮 11-16 → 切换日 11-18〔本题〕｜无三次退潮（第二十七条：第三次以上不判）
+ *
+ * ⛔ 「二次确认退潮」一律取 `switchDay.ebbDate`（第二十八条的起点，与提示板正文同源），
+ *    首次退潮 = 它之前【本龙或本题材】最近一次 ebb=true 的落库行（找不到 ⇒ 占位「—」，§10 不编）。
+ * ⛔ 「首次分歧」只认【属于本龙】的那份事实（`divergeFacts.stock === 老龙一`），否则留「—」——
+ *    拿别的票的分歧日拼进来会误导（§6 单一真相）。
+ * ⛔ 只读已注入的事实，不取数、不改任何选股判定（§4 / §11）。
+ *
+ * @param {{leaderName?:string, oldTopic?:string, ebbTopic?:string, ebbDate?:string}|null} switchDay 切换日判定
+ * @param {Array<{date:string, leaderStock:string, leaderTopic:string, ebb:boolean}>|null} ebbHistory 近 N 交易日落库行
+ * @param {{stock?:string, firstDate?:string}|null} divergeFacts 本日已算好的分歧判定（市龙一 + 首次分歧日）
+ * @param {string} today 展示日（= 切换日）
+ * @param {(raw:string)=>string} [coreRes] 大类归一函数（判「本题材」时用）
+ * @returns {string} 没有切换日 / 没有老龙一 ⇒ ''（调用方不写这一行，§11）
+ */
+export function buildLeaderEventTimeline(switchDay, ebbHistory, divergeFacts, today, coreRes) {
+  const sd = switchDay || null;
+  const name = String((sd && sd.leaderName) || '').trim();
+  if (!sd || !name) return '';
+  const md = function(d) {
+    const s = String(d === null || d === undefined ? '' : d).trim();
+    return s.length >= 10 ? s.slice(5) : (s || '—');
+  };
+  const secondEbb = String(sd.ebbDate || '').trim();
+  const ebbTopicNorm = _normTopic(sd.ebbTopic, coreRes);
+  // 首次退潮：二次确认退潮之前，本龙或本题材最近一次 ebb=true
+  let firstEbb = '';
+  (Array.isArray(ebbHistory) ? ebbHistory : []).forEach(function(r) {
+    const d = String((r && r.date) || '').trim();
+    if (!d || !r || r.ebb !== true) return;
+    if (secondEbb && d >= secondEbb) return;
+    const sameStock = String(r.leaderStock || '').trim() === name;
+    const sameTopic = !!ebbTopicNorm && _normTopic(r.leaderTopic, coreRes) === ebbTopicNorm;
+    if (!sameStock && !sameTopic) return;
+    if (d > firstEbb) firstEbb = d;
+  });
+  const df = divergeFacts || null;
+  const firstDiv = (df && String(df.stock || '').trim() === name) ? String(df.firstDate || '').trim() : '';
+  const topic = String(sd.oldTopic || '').trim();
+  const reg = String(sd.ebbTopic || '').trim();
+  const topicText = topic
+    ? ('题材=' + topic + (reg && _normTopic(reg, coreRes) !== _normTopic(topic, coreRes) ? '（退潮登记=' + reg + '）' : ''))
+    : (reg ? '题材=' + reg : '题材=—');
+  const parts = [
+    '首次分歧 ' + (firstDiv ? md(firstDiv) : '—'),
+    '首次退潮 ' + (firstEbb ? md(firstEbb) : '—'),
+    '二次确认退潮 ' + (secondEbb ? md(secondEbb) : '—'),
+    '切换日 ' + md(today) + '〔本题〕'
+  ];
+  return '〔事件轴〕' + name + ' ' + topicText + '：' + parts.join(' → ') +
+    '｜无三次退潮（第二十七条：第三次以上不判）';
 }
 
 /** 退潮日【允许看分笔卖】的股票名集合（§6：唯一的取名实现，判定与改写共用） */
@@ -462,4 +652,29 @@ export function _oldTopicBasisOf(switchDay) {
     ' ⇒ 老题材（大类）= ' + topic +
     (leaderDays > 0 ? ('；窗口内共霸榜 ' + leaderDays + ' 天') : '');
 }
-
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [BUYABLE-COUNT 2026-11-19 用户口径] 「这一行今天真的能下单吗」—— 计数唯一判据（§6）
+//
+// 为什么单独成一个纯函数：`_countUnique`（tvrb-plan.js）只该问「能下单吗」，
+//   ⛔ 不该在计数循环里再抄一遍标签比对（那会变成第二份口径）。
+//
+// 判据（三条，缺一即不可下单）：
+//   ① 行上没有名字 ⇒ 不是一行（历史行为，保持不变）；
+//   ② `abnormalTopicBlocked`（第三十四条延伸：异动第三天同题材禁入）⇒ 不买；
+//   ③ `buyActionTag` 命中 `NO_BUY_ACTION_TAGS`（七枚「不买 / 不开新仓」标签）⇒ 不买。
+//
+// ⚠️ ③ 只看【标签】不看块：块级灰化由 `_countUnique` 的调用方（blocks 循环里那几个
+//   `xxxGray` 判断）负责，两处各管一层，⛔ 不合并（合并后漏一个标记位就又数错）。
+// §10：标签判不出（undefined / 空串）⇒ 按【能买】处理 —— 那是「正常买点行」的既定形态，
+//   若反过来按「不能买」处理，任何一条新通道忘了打标签都会让计数静默变 0（更糟）。
+//
+// @param {object|null} p 买点行
+// @returns {boolean} true = 今天能下单（可计入「选股 N 只」）
+export function _isBuyablePick(p) {
+  if (!p || !String(p.name || '').trim()) return false;
+  if (p.abnormalTopicBlocked) return false;
+  const tag = String(p.buyActionTag || '').trim();
+  if (tag && NO_BUY_ACTION_TAGS.indexOf(tag) >= 0) return false;
+  return true;
+}

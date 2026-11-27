@@ -33,7 +33,12 @@
 //   §32 按日期会话缓存 + 单飞；单只票的 K 线失败登记在 `_tried`，force 才重试。
 //
 // ── 数据来源 ───────────────────────────────────────────────────────────────────────
-//   腾讯前复权日线 `fetchQtDailyBars`（批量、免费、0 猫抓额度；同花顺通道当前 FUYAO_OFF）。
+//   ★ [RANGE30-FY 2026-11-18 用户口径] **真相源在云端**：`db/scripts/compute-range30-pct.mjs`
+//     定时（北京 09:40 / 16:45 / 18:30）用【同花顺批量历史K线】算好落库，前端只读结果表。
+//     为什么云端用同花顺而不是腾讯：原生批量 10 只/次（364 只只要 37 个请求）、收盘后立刻有
+//     当天那根日线、与十日/20日/涨停同一个上游同一个前复权口径（用户能逐票对账）。
+//   ⚠️ 本文件里的腾讯通道只剩**兜底**作用：云端还没算到的新票（9:25 才进名单），
+//     或结果表读失败时，才在这里现算一次。⛔ 不要把它当成主路径，也不要删（离线也能降级出数）。
 //   ⛔ 不复用 stock_daily_pct（那张表只有逐日涨幅、没有价，算不出一次性比值）。
 
 import { ref } from 'vue';
@@ -42,9 +47,19 @@ import { getStockCode } from '../../data/stock-code-map.js';
 import { readRange30Rows, upsertRange30Rows } from '../../data/stock-range30-cache.js';
 import { getPreviousTradingDay, isTradingDay } from '../date/trading-day-helpers.js';
 import { _dbgLog } from '../../data/debug-log.js';
+// ★ [RANGE30-CLOUD 2026-11-18] 数学部分搬到 `range30-math.js`（零 import 的纯函数）——
+//   那样 Cloudflare Worker 也能直接用同一份公式算完落库，前端不必依赖「手机能不能连上腾讯」。
+import {
+  RANGE30_WINDOW_DAYS,
+  RANGE30_MIN_LEGS,
+  normalizeBars,
+  barOnOrBefore,
+  windowFromTradingDays,
+  range30InWindow
+} from './range30-math.js';
 
-/** 窗口长度：含当天在内的 30 个交易日（用户口径：「30日涨幅」） */
-export const RANGE30_WINDOW_DAYS = 30;
+// 纯函数原样再导出：单测与既有调用方一直从本文件取这些名字，⛔ 不要改导出面。
+export { RANGE30_WINDOW_DAYS, RANGE30_MIN_LEGS, normalizeBars, barOnOrBefore };
 
 /**
  * K 线探测的自然日跨度。
@@ -53,72 +68,38 @@ export const RANGE30_WINDOW_DAYS = 30;
 export const RANGE30_PROBE_DAYS = 60;
 
 /**
- * 可信门槛：窗口内至少这么多根成交腿才算得出可信的 30 日涨幅。
- * 与二十日门槛同比例（RANGE20 是 6/20 = 30%）⇒ 30 日对应 10/30 ≈ 33%。
- * ⚠️ 别拍脑袋调大：长期停牌的票（实测新华传媒 30 日窗口内只有 19 根腿）必须仍能出值。
- */
-export const RANGE30_MIN_LEGS = 10;
-
-const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-/**
- * 【纯函数】构造 30 日窗口。
+ * 【纯函数】构造 30 日窗口（前端口径：日历来自 `trading-day-helpers`）。
+ *
+ * ⚠️ 真正的窗口数学在 `range30-math.js#windowFromTradingDays`（worker 也用它）——
+ *    本函数只负责「按前端的交易日历凑出 31 个升序交易日」，⛔ 不另写一套取窗逻辑。
  *
  * @param {string} asOf 窗口末日 YYYY-MM-DD（非交易日 ⇒ 自动退到最近交易日）
  * @param {number} [n] 窗口交易日数，默认 30
  * @returns {{dates:string[], start:string, end:string, baseDate:string}|null}
- *          baseDate = 窗口首日的前一个交易日（期初前收盘所属日）；历史尽头取不到 ⇒ ''
  */
 export function buildRange30Window(asOf, n) {
   const want = Math.max(1, Number(n) || RANGE30_WINDOW_DAYS);
   const endIn = String(asOf || '').slice(0, 10);
-  if (!YMD_RE.test(endIn)) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(endIn)) return null;
   const end = isTradingDay(endIn) ? endIn : getPreviousTradingDay(endIn);
   if (!end) return null;
-  const dates = [end];
+  // 多取 1 天：升序列表里最前面那天就是 baseDate（窗口首日的前一个交易日）
+  const asc = [];
   let cur = end;
-  for (let i = 1; i < want; i++) {
+  for (let i = 0; i <= want; i++) {
+    if (!cur) break;
+    asc.unshift(cur);
+    if (i === want) break;
     cur = getPreviousTradingDay(cur);
-    if (!cur) return null;
-    dates.unshift(cur);
   }
-  return {
-    dates: dates,
-    start: dates[0],
-    end: dates[dates.length - 1],
-    baseDate: getPreviousTradingDay(dates[0]) || ''
-  };
-}
-
-/** 【纯函数】K 线标准化：只留 close>0 的合法 bar，按日期升序、同日去重（后者优先） */
-export function normalizeBars(bars) {
-  const byDate = new Map();
-  (bars || []).forEach(function (b) {
-    if (!b) return;
-    const ymd = String(b.ymd || '').slice(0, 10);
-    if (!YMD_RE.test(ymd)) return;
-    const close = Number(b.close);
-    if (!isFinite(close) || close <= 0) return;
-    byDate.set(ymd, { ymd: ymd, close: close });
-  });
-  return Array.from(byDate.values()).sort(function (a, b) {
-    return a.ymd < b.ymd ? -1 : (a.ymd > b.ymd ? 1 : 0);
-  });
-}
-
-/** 【纯函数】取「≤ ymd 的最后一个 bar」（停牌期间前收盘不变 ⇒ 等价于当日收盘） */
-export function barOnOrBefore(series, ymd) {
-  if (!ymd || !Array.isArray(series)) return null;
-  let out = null;
-  for (let i = 0; i < series.length; i++) {
-    if (series[i].ymd <= ymd) out = series[i];
-    else break;
-  }
-  return out;
+  return windowFromTradingDays(asc, endIn, want);
 }
 
 /**
  * 【纯函数】用日 K 序列算 30 日涨幅（一次性比值）。
+ *
+ * ⚠️ 真正的算式在 `range30-math.js#range30InWindow`（云端 worker 同一份）；
+ *    本函数只负责「把前端的交易日历拼成窗口」。⛔ 别在这里复制第二份比例公式。
  *
  * @param {Array<{ymd:string, close:number}>} bars 该票日 K（任意顺序）
  * @param {string} asOf 窗口末日
@@ -129,41 +110,7 @@ export function barOnOrBefore(series, ymd) {
  */
 export function range30FromBars(bars, asOf, opts) {
   const o = opts || {};
-  const win = buildRange30Window(asOf, o.days);
-  if (!win || !win.baseDate) return null;
-  const series = normalizeBars(bars);
-  if (series.length === 0) return null;
-
-  const endBar = barOnOrBefore(series, win.end);
-  const baseBar = barOnOrBefore(series, win.baseDate);
-  // ① 拿不到基准 / 期末价 ⇒ 判不出。
-  //   ★ 次新股天然落在这里：它的 K 线从上市日开始，`barOnOrBefore(baseDate)` 找不到任何 bar
-  //     ⇒ baseBar=null ⇒ 直接不出值。⛔ 绝不拿「上市首日」当 30 日前的基准凑数（那不是 30 日涨幅）。
-  if (!endBar || !baseBar) return null;
-  // ② 期初与期末是同一根 bar（区间内完全没有成交）⇒ 判不出（⛔ 不返回 0%）
-  if (endBar.ymd <= baseBar.ymd) return null;
-
-  // ③ 腿数门槛：窗口内实际有成交的根数（停牌 / 次新股会 < 30）
-  let legs = 0;
-  for (let i = 0; i < series.length; i++) {
-    const d = series[i].ymd;
-    if (d >= win.start && d <= win.end) legs++;
-  }
-  const minLegs = (o.minLegs === undefined || o.minLegs === null) ? RANGE30_MIN_LEGS : Number(o.minLegs);
-  if (isFinite(minLegs) && minLegs > 0 && legs < minLegs) return null;
-
-  const pct = (endBar.close / baseBar.close - 1) * 100;
-  if (!isFinite(pct)) return null;
-  return {
-    pct: pct,
-    days: legs,
-    start: win.start,
-    end: win.end,
-    baseDate: baseBar.ymd,
-    baseClose: baseBar.close,
-    endDate: endBar.ymd,
-    endClose: endBar.close
-  };
+  return range30InWindow(bars, buildRange30Window(asOf, o.days), o);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════════
@@ -214,15 +161,30 @@ export function getRange30FingerprintToken() {
   return s.date + '|v' + s.version + '|n' + (s.map ? s.map.size : '-');
 }
 
-/** 从各种形状的入参里抽股票名（rows = [{stock}] 或 ['名称']） */
-function _namesOf(rows) {
+/**
+ * 从入参抽 `{stock, code6}` —— 【行内 code 优先】，这是 2026-11-18 报障的修复点。
+ *
+ * 🔴 为什么必须优先行内 code（实测取证，别再改回只看 getStockCode）：
+ *   `getStockCode` 读的是 `stockcodemap` 表，实测**只有 1184 行**（全市场 5000+）。
+ *   2026-11-18 当天正式名单 32 行实测：`stockcodemap` 只命中 **16 行**，另一半（亚玛顿 / 北纬科技 /
+ *   华东重机 / 华胜天成 …）在表里根本没有 ⇒ 全部被跳过 ⇒ 用户看到「30日涨幅一列全空」。
+ *   而这 32 行在 `auction_watchlist` 里 **code 列 32/32 都有值**（worker 抓取时落的真值）。
+ *   ⇒ 行内 code 是事件真值，永远先用它（与 `range20-leaders.js#codeOfRow` 同一个解析优先级，§6）。
+ *
+ * @param {Array} rows [{stock, code}] / ['名称']
+ * @returns {Array<{stock:string, code:string}>} code = 6 位数字，判不出时为空串（§10 不猜）
+ */
+function _targetsOf(rows) {
   const out = [];
   const seen = new Set();
   (rows || []).forEach(function (r) {
     const n = String((r && r.stock) || r || '').trim();
     if (!n || seen.has(n)) return;
     seen.add(n);
-    out.push(n);
+    const raw = (r && (r.code !== undefined ? r.code : r.stock_code)) || '';
+    let code = String(raw).replace(/\D/g, '');
+    if (code.length !== 6) code = String(getStockCode(n) || '').replace(/\D/g, '');
+    out.push({ stock: n, code: code.length === 6 ? code : '' });
   });
   return out;
 }
@@ -245,7 +207,8 @@ function _publish(date, map) {
  *   ③ 写回结果表（写失败静默）+ 发布内存 Map。
  *
  * @param {string} date 窗口末日
- * @param {Array<{stock:string}>|string[]} rows 需要出值的票（看板行 / 补位候选池）
+ * @param {Array<{stock:string, code?:string}>|string[]} rows 需要出值的票（看板行 / 补位候选池）
+ *        ★ 行里带 `code` 就优先用它（事件真值）；缺才回退 `getStockCode`（见 `_targetsOf` 注释）。
  * @param {{force?:boolean}} [opts] force = 用户点开开关的手动重试 ⇒ 清空「已试过」登记
  * @returns {Promise<void>} 永不 reject
  */
@@ -253,15 +216,17 @@ export function ensureRange30(date, rows, opts) {
   const d = String(date || '').trim();
   if (!d) return Promise.resolve();
   const o = opts || {};
-  const names = _namesOf(rows);
+  // ★ 目标 = {stock, code}：code 用【行内真值优先】解析，⛔ 不再只认 stockcodemap（那是 2026-11-18
+  //   「30日涨幅一列全空」的根因，详见 `_targetsOf` 注释）。
+  const targets = _targetsOf(rows);
   _latestDate = d;
 
   const s = _state.value;
   if (o.force) _tried.delete(d);
   // 同一天、已加载、且本次要的票都在结果里 ⇒ 无需重算（名单 9:25 逐步到达时不重复打请求）
-  if (!o.force && s.date === d && s.loaded && _covers(s.map, names)) return Promise.resolve();
+  if (!o.force && s.date === d && s.loaded && _coversAll(s.map, targets, _tried.get(d))) return Promise.resolve();
   if (_inflight && _inflight.date === d) return _inflight.promise;
-  if (names.length === 0) return Promise.resolve();
+  if (targets.length === 0) return Promise.resolve();
 
   const promise = (async function () {
     // ① 结果表
@@ -274,19 +239,31 @@ export function ensureRange30(date, rows, opts) {
     const map = new Map();
     if (cached) cached.forEach(function (v, k) { map.set(k, v); });
 
+    // ★★ [RANGE30-CLOUD 2026-11-18] 结果表一读到就【先发布一次】，再去拉 K 线补缺。
+    //   为什么必须分两次发布（这是「手机上一片空白」的第二道病根）：
+    //     · 云端 worker 已把当天数值算好落库 ⇒ 常态下这一步就有全部数值，
+    //       用户点开 toggle 应当「立刻看到」，而不是等 K 线（32 只 × 4 并发最多几十秒）；
+    //     · 手机网络到不了腾讯时（2026-11-18 现场就是这样），若只在最后才发布，
+    //       屏幕会一直空白 —— 库里明明有值却显示不出来。
+    //   ⛔ 只发布真实读到的行，不造数（§10）。
+    if (_latestDate === d && map.size > 0) _publish(d, new Map(map));
+
     // ② 缺的票批量拉 K 线现算
     const tried = _tried.get(d) || new Set();
-    const missing = names.filter(function (n) { return !map.has(n) && !tried.has(n); });
+    const missing = targets.filter(function (t) {
+      return !map.has(t.stock) && !tried.has(t.stock);
+    });
     if (missing.length > 0) {
       const codes = [];
+      const codeSet = new Set();
       const codeOfName = new Map();
-      missing.forEach(function (n) {
-        const code = String(getStockCode(n) || '').replace(/\D/g, '');
-        if (code.length !== 6) return;      // ⛔ 拿不到代码 ⇒ 判不出（不猜）
-        codes.push(code);
-        codeOfName.set(n, code);
+      missing.forEach(function (t) {
+        if (!t.code) return;               // ⛔ 拿不到代码 ⇒ 判不出（不猜）
+        if (!codeSet.has(t.code)) { codeSet.add(t.code); codes.push(t.code); }
+        codeOfName.set(t.stock, t.code);
       });
-      missing.forEach(function (n) { tried.add(n); });
+      // 登记「已请求过」（含判不出代码的）：次新股 / 长期停牌 / 真没代码的票不重复烧请求（§32）
+      missing.forEach(function (t) { tried.add(t.stock); });
       _tried.set(d, tried);
 
       if (codes.length > 0) {
@@ -309,6 +286,11 @@ export function ensureRange30(date, rows, opts) {
           // ③ 落库（失败静默：下次打开重算一遍而已，不影响正确性）
           try { await upsertRange30Rows(d, writeRows); } catch (e) { /* 加速层，忽略 */ }
         }
+        // ★ [RANGE30-DIAG 2026-11-18] 「一列全空」这类报障必须能从日志里分清是哪一段断掉的（§10）：
+        //   请求了 N 只 → 算出 M 只。M=0 且 N>0 ⇒ 腾讯侧没给 bar 或窗口构造失败（日历未就绪）；
+        //   0<N<请求数 ⇒ 部分票次新 / 停牌（正常判不出）。⛔ 这只是留痕，不改变任何行为。
+        _dbgLog('[RANGE30] ' + d + ' 请求 ' + codes.length + ' 只 → 算出 ' + writeRows.length + ' 只'
+          + '（名单 ' + targets.length + ' 只）');
       }
     }
 
@@ -327,11 +309,22 @@ export function ensureRange30(date, rows, opts) {
   return promise;
 }
 
-/** 名单是否已被结果完全覆盖（缺一个就得重算 —— 9:25 名单是逐步到达的） */
-function _covers(map, names) {
+/**
+ * 名单是否已被结果完全覆盖（缺一个就得重算 —— 9:25 名单是逐步到达的）。
+ *
+ * ★ 两条「不阻塞」豁免（⛔ 少了任一条，同一天每次调用都会重算一遍）：
+ *   ① 目标本身解析不出代码 ⇒ 它永远不会有值，不能拿它把「已覆盖」永久卡成 false；
+ *   ② 目标本轮已请求过却没出值（次新股 / 长期停牌 / 腿数不足）⇒ 那是 §10 的「判不出」，
+ *      不是「还没算」，force 之前不该重复打请求。
+ */
+function _coversAll(map, targets, tried) {
   if (!map) return false;
-  for (let i = 0; i < names.length; i++) {
-    if (!map.has(names[i])) return false;
+  for (let i = 0; i < targets.length; i++) {
+    const t = targets[i];
+    if (map.has(t.stock)) continue;
+    if (!t.code) continue;
+    if (tried && tried.has(t.stock)) continue;
+    return false;
   }
   return true;
 }

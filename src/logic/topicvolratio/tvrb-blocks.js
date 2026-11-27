@@ -10,12 +10,16 @@
 //
 // 外部依赖的口径说明（原 topic-vol-ratio-rules.js 头部的 import 注释，逐条搬过来）：
 
-import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_PICK_TONE, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, EBB_SECOND_BUY_TAG, EBB_SECOND_BUY_TONE, EBB_SECOND_RULE_NO, CASH_NO_BUY_TAG, CASH_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_BLOCK_TOPIC, WEAK_HUDDLE_TOP_N, WEAK_HUDDLE_TONE, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_BLOCK_TOPIC, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, CATCH_UP_TONE, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE, SECOND_TOPIC_VOLWEAK_NO_BUY_TAG, SECOND_TOPIC_VOLWEAK_NO_BUY_TONE, DIVERGE_DIP_TAG, DIVERGE_FOLLOW_TAG, DIVERGE_NO_BUY_TAG, DIVERGE_BUY_TONE, DIVERGE_NO_BUY_TONE, DIVERGE_RULE_NO, TVRB_CASH_ALERT_NONE, SWITCH_RULE_NO, NEW_DRAGON_TAG, NEW_DRAGON_TONE, RANGE10_BACKUP_TONE, RANGE10_BACKUP_TAG, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL, ABNORMAL_TOPIC_BAN_TAG, ABNORMAL_TOPIC_BAN_TONE } from './tvrb-constants.js';
-// ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条「监管异动 · 十日涨幅硬上限」的唯一判定实现：
-//   classifyRange10 = 分级（ok / near / abnormal，阈值 97 / 100 都在 tvrb-constants 一处定义；
-//   [CAP-97 2026-11-13 晚间] 用户把自定义禁选上限 95 → 97，让 11-11 的 95.71% 正常运行）。
-//   ⛔ 本文件不另写「> 95」「> 97」「>= 100」这类字面量比较 —— 那会变成第二份规则（§6）。
-import { classifyRange10, ABNORMAL_LEVEL_ABNORMAL, ABNORMAL_LEVEL_NEAR } from './abnormal-10d.js';
+import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_PICK_TONE, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, EBB_SECOND_BUY_TAG, EBB_SECOND_BUY_TONE, EBB_SECOND_RULE_NO, CASH_NO_BUY_TAG, CASH_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_BLOCK_TOPIC, WEAK_HUDDLE_TOP_N, WEAK_HUDDLE_TONE, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_BLOCK_TOPIC, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, CATCH_UP_TONE, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE, SECOND_TOPIC_VOLWEAK_NO_BUY_TAG, SECOND_TOPIC_VOLWEAK_NO_BUY_TONE, DIVERGE_DIP_TAG, DIVERGE_FOLLOW_TAG, DIVERGE_NO_BUY_TAG, DIVERGE_BUY_TONE, DIVERGE_NO_BUY_TONE, DIVERGE_RULE_NO, TVRB_CASH_ALERT_NONE, SWITCH_RULE_NO, NEW_DRAGON_TAG, NEW_DRAGON_TONE, RANGE10_BACKUP_TONE, RANGE10_BACKUP_TAG, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_TOPIC_BAN_TAG, ABNORMAL_TOPIC_BAN_TONE, EBB_TOPIC_BAN_TAG, EBB_TOPIC_BAN_TONE, TOP30_HUDDLE_RULE_NO, TOP30_HUDDLE_TAG, TOP30_HUDDLE_BLOCK_TOPIC, TOP30_HUDDLE_TONE, TOP30_HUDDLE_TOP_N } from './tvrb-constants.js';
+// ★★ [RULE-35 2026-11-18 用户口径] 第三十五条【30日涨幅抱团】的判定纯函数（§6 唯一实现：
+//   「30日涨幅前三里与本灰色题材块同大类的、名次最靠前的那 1 只」只在这里算一次）。
+import { pickTop30Huddle } from './top30-huddle.js';
+// ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条「监管异动」的判定层不再由本文件做分级：
+//   ★ [DEV-RULE 2026-11-25 + 2026-11-26 清残留] 旧的自定义分级（按十日原始涨幅 95/97 分档）
+//     **已整体删除**，本文件不再 import 任何「涨幅分级」函数。
+//   官方红线数值从 deviation-rule-facts 取（阈值本体在 abnormal-deviation#DEV_THRESHOLDS，§6 一份实现）。
+//   ⛔ 本文件不写任何「> 95 / > 97 / >= 100」这类字面量比较 —— 那会变成第二份规则（§6）。
+import { DEV_OFFICIAL_RED_LINE_10D } from '../auction/deviation-rule-facts.js';
 import { _normTopic, _sameTopicLoose, _ebbEligibleNames, _ebbBuyPickNames, _num, _pct2, _findMemberByName, _streakWord, _closeRankOf, _windowTextOf, _todayRankPhrase, _rankLabelOf, _oldTopicNameOf, _oldTopicBasisOf } from './tvrb-utils.js';
 
 import { formatRangePct, RULE_NO, finishBuyBlock, SELL_OUT_TAG, SELL_ACTION_TONE_OUT, HOLD_TAG } from '../decision/decision-rules.js';
@@ -531,19 +535,20 @@ export function _applyCashAlertBuyRules(blocks, cashAlert) {
  */
 export function _applyAbnormalNoBuyRules(blocks, abnormal) {
   if (!abnormal || !abnormal.show) return;
-  // ★ [ABN-SAME-SOURCE] 称谓/阈值都必须与判定同源：不是总龙一就不这么叫；触发线是
-  //   ＞ CAP（97%）而不是 ≥ 100% —— 旧文案写「≥ 100%」与 FULL-MARKET 口径自相矛盾。
-  const _lbl = abnormal.leaderLabel || '市场总龙一';
+  // ★ [ABN-SAME-SOURCE] 称谓必须与判定同源：不是总龙一就不这么叫。
+  // ★★ [DEV-RULE 2026-11-25] 口径换成官方偏离值：文案只说【10日/30日偏离值 vs 红线】，
+  //   ⛔ 不许再写任何原始涨幅阈值（旧的自定义口径已彻底删除，用户：「那个有些不准」）。
+  // ★★ [MARKET-DRAGON-ONLY 2026-11-25] 触发源唯一 = 市龙一 ⇒ 原来的第三个分支
+  //   「入选票 A、B 已越红线」**已删除**（那种形态不复存在，留着就是一段永远不可达的死文案）。
+  const _lbl = abnormal.leaderLabel || '市龙一';
   const lead = '【第' + ABNORMAL_RULE_NO + '条 · 监管异动】' +
     (abnormal.kind === ABNORMAL_KIND_NEXT_DAY
-      ? (_lbl + '【' + (abnormal.leaderName || '—') + '】昨日十日涨幅 ' +
-         (abnormal.leaderPctPrevText || '—') + ' ＞ ' + TVRB_RANGE10_CAP +
-         '% ⇒ 今天是异动次日（异动次日市场情绪普遍崩坏）')
-      : (abnormal.kind === ABNORMAL_KIND_LEADER_NOW
-        ? (_lbl + '【' + (abnormal.leaderName || '—') + '】今日十日涨幅 ' +
-           (abnormal.leaderPctTodayText || '—') + ' ＞ ' + TVRB_RANGE10_CAP + '% ⇒ 今日异动')
-        : ('入选票 ' + (abnormal.names || []).join('、') + ' 十日涨幅 ＞ ' +
-           TVRB_RANGE10_CAP + '% ⇒ 监管异动'))) +
+      ? (_lbl + '【' + (abnormal.leaderName || '—') + '】昨日（收盘口径）10日偏离 ' +
+         (abnormal.leaderDevPrevText || '—') + ' / 30日 ' + (abnormal.leaderDevPrev30Text || '—') +
+         ' ⇒ 已越「严重异常波动」红线（+100% / +200%）⇒ 今天是异动次日（异动次日市场情绪普遍崩坏）')
+      : (_lbl + '【' + (abnormal.leaderName || '—') + '】今日（9:25 竞价口径）10日偏离 ' +
+         (abnormal.leaderDevTodayText || '—') + ' / 30日 ' + (abnormal.leaderDevToday30Text || '—') +
+         ' ⇒ 已越「严重异常波动」红线 ⇒ 今日异动')) +
     ' ⇒ 今天【空仓、不买任何票】。';
   (blocks || []).forEach(function(b) {
     (b.picks || []).forEach(function(p) {
@@ -554,8 +559,8 @@ export function _applyAbnormalNoBuyRules(blocks, abnormal) {
       p.buyActionTone = ABNORMAL_NO_BUY_TONE;
       p.actionNote = lead +
         '本股今天【不开新仓】—— 原本的【' + HOLD_TAG + '】/ 竞价买 / 尾盘买 / 先卖后买 / 龙一字持有 等' +
-        '买点信号一律作废。★ 为什么整段灰化：十日涨幅（竞价口径）> ' + TVRB_RANGE10_CAP +
-        '% 一律不选，达到 ' + TVRB_RANGE10_ABNORMAL + '% = 交易所严重异常波动；' +
+        '买点信号一律作废。★ 为什么整段灰化：官方口径【严重异常波动】= 连续 10 日偏离 ≥ +100% / ' +
+        '30 日 ≥ +200%（负向 ≤ −50% / ≤ −70%）⇒ 全场空仓；' +
         '一旦总龙一异动，它所在题材的票次日几乎都会崩，甚至带崩整个市场情绪。' +
         '⚠️ 下方股票仍按原规则【照常列出】（买点标签已改为【' + ABNORMAL_NO_BUY_TAG +
         '】），供你核对为什么今天不买。';
@@ -609,8 +614,8 @@ export function _applyAbnormalTopicBan(out, ban, topicsOf) {
 
   const lead = '【第' + ABNORMAL_RULE_NO + '条 · 延伸 · 异动第三天】' +
     (ban.triggerDate ? ban.triggerDate + ' ' : '') + '总龙一【' + (ban.leaderName || '—') + '】' +
-    '十日涨幅 ' + (ban.leaderPctText || '—') + ' ＞ ' + TVRB_RANGE10_CAP +
-    '% ⇒ 它所在细分题材【' + (ban.segments || []).join('、') + '】今天是异动后的【第三天】：' +
+    '（异动日）10日偏离 ' + (ban.leaderDevText || '—') + ' 已越「严重异常波动」红线（+100%）' +
+    ' ⇒ 它所在细分题材【' + (ban.segments || []).join('、') + '】今天是异动后的【第三天】：' +
     '同题材的票一律不进买点侧（临时题材也算）。';
 
   eachBuyBlock(out, function(b) {
@@ -649,6 +654,92 @@ export function _applyAbnormalTopicBan(out, ban, topicsOf) {
       b.notes.push('⚠️ ' + lead + '本题材的票今天【一律不买】，其它题材不受影响（明天第四天恢复正常）。');
     }
     res.count += ownHit;
+  });
+  return res;
+}
+
+/**
+ * ══ [EBB-TOPIC-MEMBER 2026-11-27 用户口径] 第二十条买点侧分流 · 二次确认退潮 ⇒ 退潮题材【票级】灰化 ══
+ *
+ * 用户原话（11-27，逐字）：
+ *   「大消费是符合的，只是日出东方这只股票不符合而已，可以选出日出东方，但是必须要灰色块，
+ *     并打上区别标签题材退潮不选，并在下面写明原因（这类规律的股票，不指定这只），
+ *     北纬科技还是照原来规则选入的……你只是多了一个判断条件，就是看大消费选出的那只票是不是在
+ *     退潮题材中（就是我说的那个题材窜），如果在退潮题材中，就灰色，如果不在就是常规的就可以了，
+ *     其它不变。」
+ *
+ * ⇒ 本条【不改任何选股结论】：题材数量 / 档位 / 候选顺延 / 选出哪只票，一律照原规则算完；
+ *   只在收口处多判一次「这只票的题材串里有没有退潮题材字段」，命中就：
+ *     ① 该块灰化（`b.ebbTopicGray = true`，视图与其它灰化块同一套 CSS）；
+ *     ② 该行动作标签换成【题材退潮不选】、行内说明写清「为什么」；
+ *     ③ 剔出 `buyNames`、不计入「选股 N 只」，并同步写一条块内说明。
+ * ⛔ 别的票（题材串不含退潮字段的）一个字都不改 —— 例如同日的北纬科技（游戏,通信）照常买。
+ * ⛔ 客观数据（量比 / 涨幅 / 龙标 / 一字 / 停牌）一行不动；⛔ 卖点侧动作一行不动。
+ *
+ * @param {object} out buildTopicVolRatioPlan 正在组装的计划对象（原地改）
+ * @param {{topics:string[],test:(n:string)=>boolean,segmentOf:(n:string)=>string,rawTopicsOf:(n:string)=>string}|null} ban
+ *        `makeEbbTopicBan` 的返回（null / 无 `test` ⇒ 零副作用，§11）
+ * @param {string[]} [tempTopics] 禁 buy 词里【来自当日生效临时题材】的那几个（`ebbBanTopicsOf` 的 tempTopics，
+ *        只为文案点名「哪些词是临时题材牵连进来的」，⛔ 不参与判定）
+ * @returns {{count:number, names:string[], grayBlocks:number}} 本次灰化的票（供提示板点名）
+ */
+export function _applyEbbTopicBan(out, ban, tempTopics, onSwitch) {
+  const res = { count: 0, names: [], grayBlocks: 0 };
+  if (!out || !ban || typeof ban.test !== 'function') return res;
+  const topicsText = (ban.topics || []).join('、');
+  // ★ [EBB-TOPIC-TEMP 2026-11-27] 「东方」这类词是被【总龙临时题材牵连】进来的，不是落库的原有题材 ——
+  //   用户要能一眼看出「为什么这个题材也在禁买集合里」，否则会以为规则乱杀。
+  const tempText = (Array.isArray(tempTopics) ? tempTopics : []).filter(Boolean).join('、');
+  const tempNote = tempText
+    ? ('（其中【' + tempText + '】是当日生效的临时题材，总龙的题材串沾着它 ⇒ 一并牵连进禁买集合）')
+    : '';
+  eachBuyBlock(out, function(b) {
+    if (!b || typeof b !== 'object') return;
+    const picks = Array.isArray(b.picks) ? b.picks : [];
+    let hit = 0;
+    picks.forEach(function(p) {
+      if (!p || !p.name) return;
+      if (!ban.test(p.name)) return;
+      hit++;
+      p.position = '';
+      p.holdTag = '';
+      p.buyActionTag = EBB_TOPIC_BAN_TAG;
+      p.buyActionTone = EBB_TOPIC_BAN_TONE;
+      // ★ 标记位：`_isBuyablePick` / `collectBuyNames` 据此不数它、不继承到次日卖点侧
+      p.ebbTopicBlocked = true;
+      // ★★ [ROW-GRAY 2026-11-27 用户口径·七修] 用户：「现在让它股票范围显示出来，不要整体显示灰，
+      //   哪个正常就消失出来，现在还是灰色的」⇒ 灰化从【整块】下移到【这一行】（复用既有的
+      //   `tvrb-row-nobuy-gray` 单行灰，与第三十六「逼近红线不买」同一个视图入口）。
+      //   ⛔ 块本身不灰：同块其它票正常显示，用户一眼能分出谁被否、谁没被否。
+      p.noBuyRowGray = true;
+      p.actionNote = (onSwitch
+        ? ('【第二十八条 · 切换日】老周期题材【' + topicsText + '】已经二次确认退潮结束，今天是切换日' + tempNote +
+          '：本股题材串（' + (ban.rawTopicsOf(p.name) || '—') + '）里含有老周期题材字段【' + (ban.segmentOf(p.name) || '—') +
+          '】⇒ 它还挂在老周期那条线上，切换出来的新题材不能用它，今天【不给买点】' +
+          '（切换不该切回原来的题材线）。')
+        : ('【第' + EBB_SECOND_RULE_NO + '条 · 二次确认退潮】主线题材【' + topicsText +
+          '】今天二次确认退潮' + tempNote + '：本股题材串（' + (ban.rawTopicsOf(p.name) || '—') + '）里含有退潮题材字段【' +
+          (ban.segmentOf(p.name) || '—') + '】⇒ 它属于退潮题材的票，今天【不给买点】')) +
+        '（原本的【' + HOLD_TAG + '】/ 竞价买 / 尾盘买 / 先卖后买 等买点信号一律作废）。' +
+        '★ 注意：本题材本身是符合常规选股条件的，被否定的是【这一只票的题材串】，' +
+        '同题材其它不含该字段的票照常买。' +
+        '⚠️ 客观数据与卖点侧动作照旧，只是今天不给买点。';
+      res.names.push(String(p.name).trim());
+      if (out.buyNames && typeof out.buyNames.delete === 'function') out.buyNames.delete(p.name);
+    });
+    if (hit > 0) {
+      res.count += hit;
+      // ★★ [ROW-GRAY 2026-11-27] ⛔ 不再设 b.ebbTopicGray（整块灰会让没被牵连的票也看着灰）。
+      //   `res.grayBlocks` 保留计数，但视图不再拿它做块级灰化。
+      res.grayBlocks++;
+      if (!Array.isArray(b.notes)) b.notes = [];
+      b.notes.push((onSwitch ? '⚠️【第二十八条 · 切换日】' : ('⚠️【第' + EBB_SECOND_RULE_NO + '条 · 二次确认退潮】')) +
+        '本题材【' + String(b.topic || '—') +
+        '】的常规选股结论【不变】（题材数量 / 档位 / 选出哪只票都照原规则），但选出的 ' + hit +
+        ' 只票里，' + res.names.slice(-hit).join('、') + ' 的题材串含退潮题材【' + topicsText +
+        '】' + tempNote + '⇒ 这只票打【' + EBB_TOPIC_BAN_TAG + '】、单独灰一行、不给买点；' +
+        '⚠️ 整块【不灰】——同块其它票正常显示，谁被否只否它自己。');
+    }
   });
   return res;
 }
@@ -990,6 +1081,159 @@ export function _buildWeakHuddleBlock(pool, cashAlert, list, fOpts, coreRes) {
       (rawTag ? ('它的常规买点信号是【' + rawTag + '】——' + (rawNote || '')) : '');
   });
   return block;
+}
+
+/**
+ * ══ [RULE-35 2026-11-18 用户口径] 第三十五条 · 【30日涨幅抱团（补涨让路版）】买点块 ══
+ *
+ * 一句话：空仓日先看【30日涨幅·9:26 竞价口径·只主板·前三】有没有与灰色题材块【同大类】的票 ——
+ *   有 ⇒ 说明这个题材的龙还强势、没死透，行情差时会继续抱团最强的那个，**还没轮到补涨**；
+ *   没有 ⇒ 才轮到第三十一条去选补涨票。
+ *
+ * ⛔ 与第三十条 `_buildWeakHuddleBlock` 的关系（同一档紫罗兰配色，但**是两条规则、两个尺子**）：
+ *   · 第三十条  ：池子 = **20日**涨幅前三，同题材的【全部】选 ⇒ 可能 ≥1 只；
+ *   · 第三十五条：池子 = **30日**涨幅前三，同题材的**只选最靠前 1 只**（用户拍板「只选最强的 1 只」）。
+ *   用户 2026-11-18 拍板：本条命中时 **三十 / 三十一 / 三十二 全部让路**（catalog C10）。
+ *
+ * ⛔ 不许自己再排一次名次：池子 `ebbCtx.top30` 进来时已是【只主板 + 30日涨幅降序】，
+ *   由 `tvrb-auction-board30.js` 用生产同一份 `buildAuctionLegBoard` 排好（§6）。
+ * ⛔ 不许因为「它已经在下面那个灰化块里出现过」就跳过 —— 那正是本条的主角。
+ *
+ * @param {Array} pool        `ebbCtx.top30`（主板 30日涨幅降序，已富化 topic / rank30 / suspended / isYizi）
+ * @param {object} cashAlert  buildCashAlert 的返回（读 .topic = 灰色题材块的题材名）
+ * @param {Array} list        今日题材块（成员行 = 客观数据来源）
+ * @param {object} fOpts      finishBuyBlock 的选项（与常规块共用同一份，§6）
+ * @param {(raw:string)=>string} [coreRes] 题材大类归一函数
+ * @returns {{block:object|null, reason:string, topNames:string, greyCore:string}}
+ *          reason: '' 成功 / 'no-pool' 池子不可用 / 'no-topic' 灰色题材名缺失 /
+ *                  'no-match' 前三没有同题材（'no-member' 已废除，见下）
+ */
+export function _buildTop30HuddleBlock(pool, cashAlert, list, fOpts, coreRes) {
+  const res = pickTop30Huddle(pool, (cashAlert && cashAlert.topic) || '', coreRes, TOP30_HUDDLE_TOP_N);
+  if (!res || !res.pick) {
+    return {
+      block: null,
+      reason: (res && res.reason) || 'no-pool',
+      topNames: (res && res.topNames) || '',
+      greyCore: (res && res.greyCore) || ''
+    };
+  }
+  const p0 = res.pick;
+  const topic = res.greyCore;
+
+  // 真实成员行：全题材按名字兜一次（§6 唯一实现 = _findMemberByName，第三十条 / 三十二条共用同一份查找）
+  const member = _findMemberByName(list, p0.name);
+  // ★★ [RULE-35-MEMBER 2026-11-19] ⚠️ 取不到成员行 **不再等于「不接管」**（与第三十二条逐字同款）。
+  //
+  //   🔴 上一版这里 `if (!member) return { block:null, reason:'no-member' }`，是**错的判据**：
+  //     本条候选池 = 当日 `market_metrics(scope='auction')` 的行（含龙头组 / 观察组 / 20日补位票），
+  //     比「入选题材块的 members」宽得多。实测 11-17：九阳股份在指标 75 行里，却**不在**
+  //     `auction_watchlist` 那 40 行正式名单里 ⇒ 它永远不可能出现在任何题材块的 members 上
+  //     ⇒ 本条对「九阳股份」这种票【永远判 no-member】⇒ 用户要的那只票永远选不出来。
+  //     （对照第三十一条：它同样是按【核心词大类】从榜里认亲，不要求票在块成员里 —— 11-18 说明原文
+  //      「第 6~10 名里灰色题材块【大消费】有 2 只：九阳股份（第 7 名）、青岛食品」就是这种认法。）
+  //
+  //   ⇒ 口径（照抄第三十二条 `_buildLeaderLimitDownHuddleBlock`）：member 取不到也照常出票，
+  //     只是【占比】这一项展示数据留空（`aucShare: null` / `members: []`），并在 notes 如实说明。
+  //   §10 边界：缺的是「展示用的竞价占比」，它**不参与本条判定**；本条的判定依据
+  //     （30日涨幅名次 + 同大类题材）是完整判得出来的 ⇒ 这属于「判得出但某项展示数据缺」，
+  //     ⛔ 不是「判不出」，不能拿它当不选的理由。
+  const members = member ? [member] : [];
+
+  const pctText = isFinite(Number(p0.pct)) ? Number(p0.pct).toFixed(2) + '%' : '';
+  const namesText = '【' + p0.name + '】（' + (p0.topic || '—') + '，30日涨幅 ' + (pctText || '—') +
+    '，主板第 ' + p0.rank30 + ' 名）';
+
+  const picks = [{
+    seq: 1,
+    name: p0.name,
+    // ⚠️ 不用「市龙N」标签：屏幕上那套是【收盘口径】（或竞价 toggle 打开时才竞价口径），
+    //   而本条恒定 9:26 竞价口径 ⇒ 直接写「30日第 N 名」，口径写进行内说明，⛔ 不让两套名次打架。
+    dragonLabel: '30日第' + p0.rank30 + '名',
+    dragonRank: null,
+    pct: p0.pct,
+    code: p0.code || String((member && member.code) || '').trim(),
+    pctText: pctText,
+    aucShare: member ? _num(member.aucShare) : null,
+    position: ''
+  }];
+
+  const block = {
+    block: {
+      topic: TOP30_HUDDLE_BLOCK_TOPIC,
+      rank: null,
+      count: null,
+      yiziCount: null,
+      members: members
+    },
+    rankWord: '',
+    pickRank: null,
+    reason: '【30日涨幅抱团】能入选的排名第一题材【' + topic + '】平均竞价量比 ' +
+      (cashAlert && cashAlert.avgVolRatioText) + ' ＜ ' + (cashAlert && cashAlert.threshold) +
+      ' ⇒ 题材退潮（第十九条：买点侧整段灰化、建议空仓）。但【30日涨幅主板前三】（9:26 竞价口径）里有' +
+      '同大类的龙 ⇒ 说明这个题材还没死透、行情差时资金会继续抱团最强的那个，**还没轮到补涨** ⇒ ' +
+      '选它抱团：' + namesText + '（第三十条/第三十一条/第三十二条今天一条都不用）。',
+    mode: 'top30huddle',
+    ruleNo: TOP30_HUDDLE_RULE_NO,
+    isCandidate: false,
+    candidateTag: '',
+    qualified: true,
+    notQualifiedText: '',
+    picks: picks,
+    notes: [
+      '⚠️ 本行【不是】题材选股的结果，也不是「题材没退潮」—— 那个题材照旧退潮、下面那一块照旧灰化。' +
+        '本行是【从 30 日涨幅榜里选】：行情差时资金会抱团最强的市场龙头（也是题材龙头），叫【30日涨幅抱团】。',
+      '【怎么选】= 取【30日涨幅主板前三名】（9:26 **竞价口径**；只数主板：创业板 300/301、科创板 688/689、' +
+        '北交所一律不算名次），再在其中挑【与本灰色题材块同大类】的 —— 本日 = ' + namesText + '。',
+      '⚠️ 为什么不是补涨：同题材的龙还在 30 日涨幅前三 ⇒ 它强势、还没死透，行情差时会继续抱团最强的那个，' +
+        '**还没轮到补涨**。所以今天【第三十条（20日涨幅抱团）/ 第三十一条（补涨题材）/ 第三十二条（龙一跌停切抱团）' +
+        '三条全部让路，一条都不出票】—— 这是用户 2026-11-18 的口径。',
+      '⚠️ 只选 **1** 只（同题材里名次最靠前的那只），不是「前三里同题材的全部选」—— 那是第三十条的行为。',
+      '⚠️ 一只都不在前三名 ⇒ 本条不生效，回到原来的第三十一条（补涨票）。',
+      '⚠️ 它同时仍会在下面那个灰化块里出现一次：那一块是【题材结论】（整块灰化、标签【' +
+        CASH_NO_BUY_TAG + '】），这一行是【股票结论】—— 题材结论与股票结论是两件事，' +
+        '⛔ 不用合并、也不用删掉任何一处。',
+      '⚠️ 涨幅口径 = 【30日涨幅 · 9:26 竞价口径】；与「30日涨幅」toggle 上那套「市龙一~五」' +
+        '（收盘口径 / 竞价 toggle 打开时才竞价）**不是同一份名次**，行上写的是「30日第 N 名」。'
+    ].concat(member ? [] : [
+      // ★★ [RULE-35-MEMBER 2026-11-19] §10：缺什么就说什么，⛔ 不静默（否则用户会以为「占比也是 0」）。
+      'ℹ️【占比留空的原因】' + p0.name + ' 在当日【9:26 竞价指标行】里有涨幅与排名（本条据此选中它），' +
+        '但它不在「本日入选题材块的成员名单」里（例如它只是龙头组 / 观察组 / 20日补位票，' +
+        '或在 `auction_watchlist` 正式名单之外）⇒ 行上的【竞价占比】取不到值，留空显示。' +
+        '⚠️ 这不影响本条的选择结论：本条判的是【30日涨幅名次 + 同核心词大类】，这两项都是完整判定的。'
+    ]),
+    topic: TOP30_HUDDLE_BLOCK_TOPIC,
+    rank: null,
+    count: null,
+    yiziCount: null,
+    avgVolRatio: null,
+    avgVolRatioText: '',
+    tier: TOP30_HUDDLE_TONE,
+    pickCount: 0,
+    rangeText: '',
+    skippedNames: [],
+    isTop30Huddle: true
+  };
+
+  // ① 客观数据 + 原始买点信号算齐（决策看板同一份实现）
+  finishBuyBlock(block, fOpts);
+  // ② 覆盖式：动作标签换成【30日涨幅抱团】，原文留进行内说明
+  (block.picks || []).forEach(function(p) {
+    const rawTag = p.buyActionTag || '';
+    const rawNote = p.actionNote || '';
+    p.buyActionTag = TOP30_HUDDLE_TAG;
+    p.buyActionTone = TOP30_HUDDLE_TONE;
+    p.holdTag = '';
+    p.position = '';
+    p.actionNote = '【第' + TOP30_HUDDLE_RULE_NO + '条 · 30日涨幅抱团】它是【' + topic + '】的股票，' +
+      '该题材平均竞价量比只有 ' + (cashAlert && cashAlert.avgVolRatioText) + '（＜ ' + (cashAlert && cashAlert.threshold) +
+      '）⇒ 题材已退潮、下面那一块整段灰化不开新仓；' +
+      '但它是【30日涨幅主板第 ' + p0.rank30 + ' 名】（' + (pctText || '—') + '，9:26 竞价口径），在【前三】之内 ⇒ ' +
+      '同题材的龙还强势、没死透，行情差时资金会继续抱团最强的那个 ⇒ 这一只今天可以买（30日涨幅抱团）。' +
+      '⚠️ 停牌 / 竞价一字的信息照常显示；竞价一字涨停的票【可以买，但要等开板后再进】，别在封板上硬追。' +
+      (rawTag ? ('它的常规买点信号是【' + rawTag + '】——' + (rawNote || '')) : '');
+  });
+  return { block: block, reason: '', topNames: res.topNames, greyCore: res.greyCore };
 }
 
 /**
@@ -1394,13 +1638,15 @@ export function buildCashAlert(leadBlock, ebb, abnormal) {
       rank: null,
       avgVolRatio: null,
       avgVolRatioText: '—',
-      threshold: TVRB_RANGE10_CAP,
+      threshold: DEV_OFFICIAL_RED_LINE_10D,   // [DEV-RULE 2026-11-25] 官方 10 日红线（+100%）
       headline: abnormal.headline,
       detail: abnormal.detail,
       // ★ 附加事实（视图不读、单测 / 排障读）：与「量比低」「退潮」两种成因区分开
       kind: abnormal.kind || '',
       ruleNo: ABNORMAL_RULE_NO,
-      abnormalNames: abnormal.names || []
+      // ★ [MARKET-DRAGON-ONLY 2026-11-25] 触发源唯一是市龙一（`leader` 那几项），
+      //   原来的 `abnormalNames`（入选票越线名单）随该形态一起删除 ⇒ 恒空数组保留字段形态，⛔ 别再往里塞东西
+      abnormalNames: []
     };
   }
   // ★ [EBB 2026-10-13] 退潮首日 ⇒ 空仓（理由比「量比低」更硬：最强的那只都停了 / 占比不达标）
@@ -1633,11 +1879,11 @@ export function _dragonCandidates(block, dragonMap, pctMap) {
  *      候选改「同题材 20日涨幅前十（按名次升序）→ 同题材其余成员（按龙位升序）」，
  *      见下面 `topicTop20` 那一段；
  *   ② 从高到低依次取票，直到【名额】用满（本档只数 1 或 2 个名额）；
- *   ③ 【竞价涨停（竞价一字）】买不进 ⇒ 跳过、**不占名额**（顺延补位）；
- *      ★ 例外：big / mid 档命中前十时【照选 + 打标签】（用户 2026-11-14 口径「竞价涨停的票也放进去，
- *        打上标签就可以，这样更加清晰些」；10-21 海洋王同口径「你打上那个涨停标签，下杀买」）；
+ *   ③ 【竞价涨停（竞价一字）】⇒ **照常选进、占一档、只打标签**（★ [YIZI-NO-SHIFT 2026-11-20]
+ *      全部通道统一，⛔ 「跳过后顺延下一龙位」的旧口径已废除 —— 理由：这类票盘中常会下杀后回封，
+ *      跳过就可能错过大票）；
  *      【连续停牌】买不进 ⇒ 跳过、**占掉一个名额**（不补位，题材跟着少取）。
- *      ⛔ 与决策看板的「占名次不递补」不同：本看板用户明确要求往下顺延（一字）／名额作废（停牌）。
+ *      ⛔ 与决策看板的「占名次不递补」不同：本看板停牌是名额作废（一字已不再顺延）。
  *
  * ⛔ 本看板【没有仓位口径】：picks 的 position 一律留空（用户第二轮点名的标签里没有重仓 / 轻仓，
  *    而本看板按龙位取票、本来就没有「前 N 只重仓」这回事 —— ⛔ 不凭空造一条仓位规则）。
@@ -1653,7 +1899,7 @@ export function _dragonCandidates(block, dragonMap, pctMap) {
  *                    给了就用它，⛔ 不再走 `_dragonCandidates` 的全量龙位序列。只用于
  *                    【排名第一 + 数量 4~6 只】那一段（见 TVRB_SMALL_TOPIC_MAX）；
  *                    ⚠️ 序列里的元素仍是 `_dragonCandidates` 的产物（同一形状、同一字段），
- *                    所以下面「竞价一字顺延 / 连续停牌占档」那一套逻辑【一行都不用改】。
+ *                    一字/停牌的处理走下面【全通道统一】那一套（一字照选、停牌作废）。
  *   · `smallTopic` = 说明文案标记：本块走的是收紧口径（`reason` 里讲清「只在十日涨幅前十的同题材票里
  *                    取组内最强的那一只」），⛔ 不传 ⇒ 文案与加规则之前逐字相同（§11 零行为变化）。
  *   · `baseText`   = 十日涨幅池的口径时间文案（'9:26 竞价口径' / '收盘口径（…未读到）'），只进文案。
@@ -1739,69 +1985,61 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
   const skippedSuspend = [];
   // ★★ [SUSPEND-OCCUPY 2026-10-15 用户口径] 「档位」计数（= 已经用掉几只的名额）。
   //
-  // 用户原话（逐字）：
+  // 用户原话（逐字，2026-10-15）：
   //   「比如龙一停牌占位，龙二是一字，那就顺位取龙三，只取一只，如果龙一没停牌，也不是一字，
   //     买龙一或者顺位下一只，买两只，相当于有龙一可以买两只，如果龙一是一字，那就可以买龙二和龙三，
   //     因为龙一比较强。停牌看不出来，舍掉龙一，只买一只靠前的」
+  //   ⚠️ 其中「龙一是一字 ⇒ 买龙二和龙三」这一段【已于 2026-11-20 废除】
+  //      （[YIZI-NO-SHIFT]：一字照选 + 打标签，见下面 isYizi 分支的长注释）。
   //
   // ⇒ 两种「买不进」的语义【不同】，必须分开算：
-  //   · 【竞价一字】买不进 ⇒ **不占档位**（顺延补位）：龙一是一字 ⇒ 照样买满 N 只（龙二 + 龙三）。
-  //     理由：一字是「很强」的票，用户口径明确要「看龙二、龙三」把名额买满。
+  //   · 【竞价一字】⇒ **照常选进、占一档、只打标签**（⛔ 不再「不占档位顺延下一龙位」）。
+  //     理由（2026-11-20 用户原话）：竞价涨停的票盘中常会下杀后回封，跳过就可能错过好票。
   //   · 【连续停牌】买不进 ⇒ **占档位**（不补位）：龙一停牌 ⇒ 该档作废 ⇒ 只剩 1 个名额。
   //     理由：停牌票连竞价都没有，占着龙位也买不到，名额跟着作废才符合「实际能买到的票」。
   //     实测（2026-10-14 AI应用，13 只 ⇒ 取 2 只）：龙一 新华传媒【连续停牌】占掉 1 档
   //     ⇒ 只选龙二 慈文传媒 1 只（用户口径：「AI应用题材当天只选一只更加合理」）。
   let slotsUsed = 0;
-  // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条：碰到【异动票】（十日涨幅 ≥ 100%）时，
-  //   该题材块【只展示这一只】、标【异动不买】，⛔ 不再往下选别的龙位（理由见下面循环里的长注释）。
-  let abnormalCand = null;
-  // ★ [FULL-MARKET] 不再有「被跳过、顺延下一只」的候选：> 自定义禁选上限的票一律
-  //   整块停止选股（见下面循环）。旧 skippedAbnormal 数组已随口径撤销。
   for (let i = 0; i < cands.length && slotsUsed < tier.pickCount; i++) {
     const c = cands[i];
-    // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条【监管异动 · 十日涨幅硬上限】：
-    //
-    //   用户 11-13 早间原话：「新增总约束，十日涨幅竞价口径不能超过 95%（这是自定义标准，不能超过）……
-    //     十日达到 100% 异动，提示空仓，选出的票整块变灰色（不用去掉）」
-    //   ★★ [CAP-97 2026-11-13 晚间修订] 95% → **97%**（用户「调到97%，11月11日这样能正常运行，
-    //     超过97%该题材或者股票就不能选，监管异动了」）⇒ 11-11 东方海洋 95.711445% 落回【正常】。
-    //
-    //   ★★ [FULL-MARKET 2026-11-13 用户当场纠正] near（>97 且 <100）与 abnormal（≥100）
-    //      后果【完全相同】：本题材块【只展示这一只】、停止选股，⛔ 绝不顺延下一只。
-    //      用户原话：「是整个题材的……也就是全场整片灰，整个市场也是灰色，没有票可以买，
-    //      总龙一影响范围很大的，这个波及到所有的票」。
-    //      ⇒ 顺延 = 从马上要崩的题材里挑次强的票，正是用户否掉的选法。
-    //      ⇒ 全市场整片灰 / 空仓由 _applyAbnormalSweep（规则层）与 abnormal-overlay（显示层）收口。
-    //   ① pct > TVRB_RANGE10_CAP（near / abnormal）⇒ 保留展示 + 停止选股：abnormalPick = 这一只。
-    //      ⛔ 不是「删掉」—— 用户明确「不用去掉」，要能看见是哪只票踩了线。
-    //   ② pct ≤ TVRB_RANGE10_CAP（含 11-11 的 95.71%）⇒ 完全不介入，按原规则正常选股。
-    //   ③ pct 读不到（null）⇒ 分级 = 'unknown' ⇒ ⛔ 既不跳过也不判异动（§10 不猜）。
-    const lv10 = classifyRange10(c.pct);
-    if (lv10.level === ABNORMAL_LEVEL_ABNORMAL || lv10.level === ABNORMAL_LEVEL_NEAR) {
-      abnormalCand = c;
-      picked.push(c);
-      slotsUsed++;
-      break;
-    }
+    // ★★ [DEV-RULE 2026-11-25 口径整体替换] 这里原来有一段「候选票十日涨幅 > 97% ⇒ 本块只展示这一只、
+    //   停止选股」的分支（[ABNORMAL-10D] / [FULL-MARKET]）。**已删除**：
+    //   · 用户 2026-11-25 换了口径（官方偏离值），并明确「只灰这一行，不灰整个题材块」；
+    //   · 本层（题材块）手里只有十日涨幅、拿不到官方偏离值（那要逐日腿 + 指数腿）⇒ 在这里判必然是另一把尺子；
+    //   · 现在改由规则层收口后的【第三十六条】统一处理：买点票里档位 ∈ {near, severe} 的**那一行**灰化 +
+    //     标签【逼近红线不买】+ 不计入「选出 N 只」，⛔ 不再影响同块其它票（见 tvrb-plan#_applyDeviationNearRule）。
+    //   §11：只删「停止选股」这个副作用，票本身照常参与选股 → 由后置通道改标签，用户仍然看得见它。
     if (c.isYizi) {
-      // ★★ [AUTO-PICK-TOP20 2026-11-14 用户口径] big 档（> 8 只）**不再顺延**：竞价涨停的票【照常选进】，
-      //   只打一枚标签（「竞价一字涨停 · 等下杀买」，由 auction-yizi-tag#annotateAuctionYizi 统一挂）。
-      //   用户原话：「之前的那个顺位，就是一字涨停买不进，看下一个龙位，这个有些不准，因为核心股票
-      //   基本是那些20日涨幅前排的，在题材中下一个龙位有可能是后排。所以现在竞价涨停的票也放进去，
-      //   打上标签就可以，这样更加清晰些。」
-      //   ★★ [MID-TOP20 2026-11-14 用户口径] mid 档同理 —— 用户原话（10-21 商业航天 7 只）：
-      //   「题材总数量7按理来说选一只最强的，那就是海洋王……但是竞价涨停，没办法，你打上那个涨停标签，
-      //   下杀买。」⇒ 中档命中前十后【同样照选 + 打标签】，⛔ 不再顺延到龙三（顺延到的多是后排）。
-      //   ⚠️ 只有【没走 TOP20 口径】的块（前十没有本题材票 / 池子没读到）才保留旧的
-      //   「跳过 + 不占名额」顺延口径（用户 2026-10-15：「龙一是一字，那就可以买龙二和龙三」）。
-      //   同时它【照常占一档】—— 它本来就是被选中的那一只（不像旧口径那样「让位给下一龙位」）。
-      // ★★ [TOPIC-INNER-SELECT 2026-11-17] `opt.yiziKeep`（缺省 false ⇒ 逐字退回上面的旧口径，§11）：
-      //   第二十九条「第二题材内按十日涨幅前十选票」这条通道给的候选**本身就只是前十里的那几只**，
-      //   一旦按旧口径「一字 ⇒ 跳过顺延」，跳过之后剩下的都是更弱的票（甚至一只不剩）——
-      //   而用户 2026-11-16 已明确「一字涨停可以入选……也没叫你去掉啊」「盘中它有时候会开板」。
-      //   ⇒ 该通道下【照选 + 占一档】，标签由 auction-yizi-tag.js 统一挂（唯一来源 §6）。
-      //   ⚠️ 只在本开关为 true 时生效；SMALL-TOPIC 的 `opt.order`（不带这个开关）仍是旧口径。
-      if (!useTop20 && !o.yiziKeep) { skipped.push(c); continue; }   // 竞价涨停 → 买不进 ⇒ 顺延下一龙位（⛔ 不占档位）
+      // ═══════════════════════════════════════════════════════════════════════════════════
+      // ★★ [YIZI-NO-SHIFT 2026-11-20 用户口径 · 全通道统一] 竞价一字涨停 ⇒ **照常选进、只打标签**。
+      // ⛔ 「龙一涨停看龙二、龙二涨停看龙三……」这条【顺延口径已废除】。
+      //
+      // 用户原话（2026-11-20，逐字）：
+      //   「现在新规是不跳过竞价一字涨停了吗，不用顺延这个规则了……现在改成可以选竞价涨停一字的，
+      //    因为这些竞价涨停的票很有可能，盘中下杀后回封（涨停），如果跳过可能就错过好票了，
+      //    所以打上那个标签竞价一字涨停，等下杀买。」
+      //   「再说一次，不用这个规则了：龙位 龙一盛剑科技 竞价涨停（买不进）⇒ 已顺延到下一个龙位……，
+      //    这个口径现在发现不是很好。」
+      //
+      // 🔴 事故现场（11-20 早，就是这段话的来源）：小题材收紧档（6 只、排名第一 ⇒ 只在
+      //   当天的十日涨幅前十的同题材票里取「组内最强」那只）里，龙一 盛剑科技 竞价一字涨停
+      //   ⇒ 旧口径把它跳过 ⇒ 顺延到 兴欣新材。用户判定的正确答案是【盛剑科技】。
+      //
+      // 历史演进（⛔ 别只看最后一条就改回去，每一条都是用户当场拍板）：
+      //   · 2026-10-15「龙一是一字，那就可以买龙二和龙三」⇒ 旧顺延口径（现已废除）；
+      //   · 2026-11-14 [AUTO-PICK-TOP20] / [MID-TOP20] big 档与 mid 档命中「同题材 20日涨幅前十」
+      //     ⇒ 先在这两档改成「照选 + 打标签」（用户：「下一个龙位有可能是后排」）；
+      //   · 2026-11-16 [R10-YIZI-REPEAL] 十日候补（第二十九条）同样改成照选；
+      //   · 2026-11-17 [TOPIC-INNER-SELECT] 第二题材内选票加 `yiziKeep` 开关再补一路；
+      //   · 2026-11-20 [YIZI-NO-SHIFT]（本条）**收口成一条通则**：不管是哪条通道、有没有走 TOP20
+      //     口径、是不是小题材收紧 —— 一字一律照选 + 占一档 + 挂统一标签。
+      //     ⇒ `opt.yiziKeep` 随之作废（参数保留但已无意义，见 tvrb-plan.js 传参处的退役说明）。
+      //
+      // ⚠️ 它【照常占一档】：它本来就是被选中的那一只，不再「让位给下一个龙位」（§11 会改变选股结论）。
+      // ⚠️ 标签唯一来源仍是 `auction-yizi-tag.js#annotateAuctionYizi`（plan 层统一后处理，§6）——
+      //    ⛔ 不要在这里自己写标签字面量。
+      // ⚠️ 【连续停牌】不受本条影响：停牌是「连竞价都没有」，仍按买不进占档不补位（见下一条分支）。
+      // ═══════════════════════════════════════════════════════════════════════════════════
       picked.push(c);
       slotsUsed++;
       continue;
@@ -1886,26 +2124,42 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
   }).join('；');
   const top20YiziNames = picked.filter(function(c) { return useTop20 && c.isYizi; })
     .map(function(c) { return c.name; });
+  // ★★ [YIZI-NO-SHIFT 2026-11-20 用户口径] 一字票的统一说法 —— **唯一来源**（reason / notes / 手册同款）。
+  //   ⛔ 各分支不许再各写一句「竞价一字顺延」/「不再顺延」（同一条口径两种说法 = 本类事故的第一成因）。
+  const YIZI_KEEP_TEXT_SENTENCE =
+    '竞价一字涨停的票【照常选进、只打标签】「' + AUCTION_YIZI_WAIT_TAG + '」（⛔ 不再顺延下一个龙位：' +
+    '盘中它常会下杀后回封，跳过就可能错过大票）；';
+  // ★★ [CASE-1123-HAILI 2026-11-26 用户报障] 第二十九条（题材量比不达标 ⇒ 题材内选票）通道：
+  //   本块实际按 `o.order`（= 本题材内十日涨幅〔9:26 竞价口径〕排序，再过「首次/二次在列」闸门）
+  //   取票，⛔ 不是「龙一 → 龙二」；照抄龙位口径会与判定相反 —— 11-23 半导体选「海立股份」
+  //   就是这么被误读成「龙位第 3 名被选、第 1/2 名被跳过」（用户原话：「是不是口径没对上啊，非常乱」）。
+  //   `o.smallTopic` 是「排名第一 + 4~6 只」的另一条收紧档，文案已单列，⛔ 不要重复命中。
+  const useSecondTopicInner = !!(o.secondTopic && Array.isArray(o.order) && o.order.length > 0) && !o.smallTopic;
   const reason = o.smallTopic
     ? ('按【平均竞价量比 ' + formatAvgVolRatio(avg) + '】排第 ' + block.rank +
        '，股票数量 ' + tier.count + ' 只（' + tier.rangeText + '）⇒ 取 ' + tier.pickCount +
        ' 只；★ 本题材数量落在【' + TVRB_MIN_COUNT + '~' + TVRB_SMALL_TOPIC_MAX +
        ' 只】且是排名第一 ⇒ 收紧：只在【当天十日涨幅〔' + (o.baseText || '9:26 竞价口径') +
        '〕前十】的同题材票里取【组内最强（龙位最前）】的那一只（数量少的题材次日顶多活一只，' +
-       '只买最强的）；买不进照旧：竞价一字顺延、连续停牌作废。')
-    : (useTop20
+       '只买最强的）；' + YIZI_KEEP_TEXT_SENTENCE + '连续停牌作废。')
+    : (useSecondTopicInner
       ? ('按【平均竞价量比 ' + formatAvgVolRatio(avg) + '】排第 ' + block.rank +
          '，股票数量 ' + tier.count + ' 只（' + tier.rangeText + '）⇒ 取 ' + tier.pickCount +
-         ' 只；★ ' + top20ScopeLead + top20Expr +
-         '里【排名最靠前的 ' + tier.pickCount + ' 只】（出现第 ' + (tier.pickCount + 1) + ' 只起不选）—— ' +
-         '核心票基本就是 20日涨幅前排那几只；' +
-         '竞价涨停的票【照常选进、只打标签】（⛔ 不再顺延下一龙位）；' +
-         '前十不足 ' + tier.pickCount + ' 只时用【同题材靠前的票】补足；' +
-         '前十一只都没有 ⇒ 退回常规龙位口径。')
-      : ('按【平均竞价量比 ' + formatAvgVolRatio(avg) + '】排第 ' + block.rank +
-         '，股票数量 ' + tier.count + ' 只（' + tier.rangeText + '）⇒ 取 ' + tier.pickCount +
-         ' 只；按【龙一 → 龙二 → …】从高到低依次取票：遇到【竞价涨停（竞价一字）】买不进 ⇒ ' +
-         '顺延到下一个龙位；遇到【连续停牌】买不进 ⇒ 该龙位【不再补位】（本题材实际少取相应只数）。'));
+         ' 只；★【第二十九条 · 题材量比不达标 ⇒ 题材内选票】本题材【不作废】，改在' +
+         '【本题材内十日涨幅〔' + (o.baseText || '9:26 竞价口径') + '〕前十】里按【首次在列 > 二次在列】选票' +
+         '（⛔ 不按龙位取票，龙位只作对照）：' + YIZI_KEEP_TEXT_SENTENCE + '连续停牌作废。')
+      : (useTop20
+        ? ('按【平均竞价量比 ' + formatAvgVolRatio(avg) + '】排第 ' + block.rank +
+           '，股票数量 ' + tier.count + ' 只（' + tier.rangeText + '）⇒ 取 ' + tier.pickCount +
+           ' 只；★ ' + top20ScopeLead + top20Expr +
+           '里【排名最靠前的 ' + tier.pickCount + ' 只】（出现第 ' + (tier.pickCount + 1) + ' 只起不选）—— ' +
+           '核心票基本就是 20日涨幅前排那几只；' + YIZI_KEEP_TEXT_SENTENCE +
+           '前十不足 ' + tier.pickCount + ' 只时用【同题材靠前的票】补足；' +
+           '前十一只都没有 ⇒ 退回常规龙位口径。')
+        : ('按【平均竞价量比 ' + formatAvgVolRatio(avg) + '】排第 ' + block.rank +
+           '，股票数量 ' + tier.count + ' 只（' + tier.rangeText + '）⇒ 取 ' + tier.pickCount +
+           ' 只；按【龙一 → 龙二 → …】从高到低依次取票：' + YIZI_KEEP_TEXT_SENTENCE +
+           '遇到【连续停牌】买不进 ⇒ 该龙位【不再补位】（本题材实际少取相应只数）。')));
 
   const notes = [];
   notes.push(o.smallTopic
@@ -1914,19 +2168,26 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
        ' 只；★【小题材收紧】数量落在 ' + TVRB_MIN_COUNT + '~' + TVRB_SMALL_TOPIC_MAX +
        ' 只且是排名第一 ⇒ 不按全部龙位取票，只在【当天十日涨幅〔' + (o.baseText || '9:26 竞价口径') +
        '〕前十】的同题材票里取【组内最强（龙位最前）】的那一只（用户口径：这种数量少的，' +
-       '次日能存活下来的顶多有一只，所以就买最强的）。买不进照旧：竞价一字顺延下一只、连续停牌该名额作废。')
-    : (useTop20
+       '次日能存活下来的顶多有一只，所以就买最强的）。' + YIZI_KEEP_TEXT_SENTENCE +
+       '【连续停牌】仍买不进 ⇒ 该名额作废。')
+    : (useSecondTopicInner
       ? ('本题材按平均竞价量比排第 ' + block.rank + '（量比 ' + formatAvgVolRatio(avg) +
          '），数量 ' + tier.count + ' 只 → ' + tier.rangeText + ' ⇒ 取 ' + tier.pickCount +
-         ' 只；★【' + top20Label + '】' + top20ScopeLead + top20Expr +
-         '里【排名最靠前的 ' + tier.pickCount + ' 只】—— 不从龙位往下顺延，' +
-         '核心票基本就是 20日涨幅前排那几只，题材内的下一个龙位很可能是后排。' +
-         '【竞价涨停】的票照常选进（只打标签，见下）；【连续停牌】仍买不进 ⇒ 该名额作废、不补位。')
-      : ('本题材按平均竞价量比排第 ' + block.rank + '（量比 ' + formatAvgVolRatio(avg) +
-         '），数量 ' + tier.count + ' 只 → ' + tier.rangeText + ' ⇒ 取 ' + tier.pickCount +
-         ' 只；入选股票按龙位从高到低依次取：' +
-         '【竞价涨停（竞价一字）】买不进 ⇒ 顺延到下一个龙位（名额照买满）；' +
-         '【连续停牌】买不进 ⇒ 该龙位【不再补位】（停牌票连竞价都没有，占着龙位也买不到，名额跟着作废）。')));
+         ' 只；★【第二十九条 · 题材量比不达标 ⇒ 题材内选票】本题材【不作废】，' +
+         '改在【本题材内十日涨幅〔' + (o.baseText || '9:26 竞价口径') + '〕前十】里按' +
+         '【首次在列（1 次）> 二次在列（2 次）】选票 ⇒ ⛔ 不按龙位取票（本题材的龙位只作对照，见下一条）。' +
+         YIZI_KEEP_TEXT_SENTENCE + '【连续停牌】仍买不进 ⇒ 该名额作废。')
+        : (useTop20
+          ? ('本题材按平均竞价量比排第 ' + block.rank + '（量比 ' + formatAvgVolRatio(avg) +
+             '），数量 ' + tier.count + ' 只 → ' + tier.rangeText + ' ⇒ 取 ' + tier.pickCount +
+             ' 只；★【' + top20Label + '】' + top20ScopeLead + top20Expr +
+             '里【排名最靠前的 ' + tier.pickCount + ' 只】—— 不从龙位往下顺延，' +
+             '核心票基本就是 20日涨幅前排那几只，题材内的下一个龙位很可能是后排。' +
+             YIZI_KEEP_TEXT_SENTENCE + '【连续停牌】仍买不进 ⇒ 该名额作废、不补位。')
+          : ('本题材按平均竞价量比排第 ' + block.rank + '（量比 ' + formatAvgVolRatio(avg) +
+             '），数量 ' + tier.count + ' 只 → ' + tier.rangeText + ' ⇒ 取 ' + tier.pickCount +
+             ' 只；入选股票按龙位从高到低依次取：' + YIZI_KEEP_TEXT_SENTENCE +
+             '【连续停牌】买不进 ⇒ 该龙位【不再补位】（停牌票连竞价都没有，占着龙位也买不到，名额跟着作废）。'))));
   // ★★ [AUTO-PICK-TOP20] / [MID-TOP20] 判定可追溯：前十命中哪几只、取的是哪几只、第几名起不再选（用户要能逐只核对）
   if (useTop20) {
     const got = picks.map(function(p) { return String(p.name || '').trim(); }).filter(Boolean);
@@ -1963,50 +2224,39 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
   } else if (topicTop20 && topicTop20.judge === 'none') {
     // ★ 判出来了、确实一只都没有 ⇒ 按用户口径退回常规龙位口径（⛔ 不弃题材）
     notes.push('⚠️【' + top20Label + ' · 未命中】20日涨幅〔' + top20Text + '〕前十【没有】本题材的票 ⇒ ' +
-      '按用户口径退回【常规龙位口径】取票（龙一 → 龙二 → …；竞价一字顺延、连续停牌作废）。');
+      '按用户口径退回【常规龙位口径】取票（龙一 → 龙二 → …；' + YIZI_KEEP_TEXT_SENTENCE + '连续停牌作废）。');
   } else if (topicTop20 && topicTop20.judge === 'no-pool') {
     // §10：判不出 ≠ 一只都没有 ⇒ 本次不生效、如实写「未校验」
     notes.push('⚠️【' + top20Label + ' · 未校验】20日涨幅前十名单没读到（本日还没发布 / 读失败 / 为空）⇒ ' +
       '判不出「前十有没有本题材的票」⇒ 本条【本次不生效】，退回常规龙位口径取票；' +
       '数据到货后自动重判。');
   }
+  // ★★ [YIZI-NO-SHIFT 2026-11-20] `skipped` 只剩「历史残留」语义：一字已不再进这里。
+  //   ⚠️ 保留这段只为兜住极端情况（万一将来又有通道 push 进来），文案必须与新口径一致 ——
+  //      ⛔ 绝不能再写「已顺延到下一个龙位」（那是已废除的旧口径）。
   if (skippedNames.length > 0) {
     notes.push('⚠️ 龙位 ' + skippedNames.join('、') +
-      ' 竞价涨停（买不进）⇒ 已顺延到下一个龙位（用户口径：龙一涨停看龙二，龙二涨停看龙三……）。');
+      ' 竞价涨停（买不进）⇒ 按用户口径【照常选进 + 挂「' + AUCTION_YIZI_WAIT_TAG + '」标签】，⛔ 不顺延。');
   }
   if (skippedSuspendNames.length > 0) {
     notes.push('⚠️ ' + skippedSuspendNames.join('、') +
       ' 【连续停牌】（今天停牌、昨天也停牌：没有竞价涨幅 / 竞价量 / 昨日成交量）⇒ 买不进，' +
-      '该名额【不再补位】（⛔ 与「竞价一字」不同：一字是顺延补位把那一名额买满，' +
+      '该名额【不再补位】（⛔ 与「竞价一字」不同：一字【照常选进、只打标签】，' +
       '停牌是该名额直接作废、本题材少取 ' + skippedSuspendNames.length + ' 只）。' +
       '⚠️ 停牌【首日】不跳（用户口径：昨天首日停牌还可以入选）——' +
       '只有连着第 2 天及以上停牌才按「买不进」处理。');
   }
   if (picks.length < tier.pickCount) {
     notes.push(o.smallTopic
-      ? ('⚠️ 本题材【当天十日涨幅前十】里可买入（非竞价涨停、非连续停牌）的票不足 ' +
+      ? ('⚠️ 本题材【当天十日涨幅前十】里可买入（非连续停牌；竞价一字算可买）的票不足 ' +
          tier.pickCount + ' 只 ⇒ 实际取 ' + picks.length +
          ' 只（⛔ 不从第十名之外补位 —— 收紧口径就是【只买最强的】）。')
       : (useTop20
-        ? ('⚠️ 本题材可买入（非连续停牌）的票不足 ' + tier.pickCount + ' 只 ⇒ 实际取 ' +
+        ? ('⚠️ 本题材可买入（非连续停牌；竞价一字算可买）的票不足 ' + tier.pickCount + ' 只 ⇒ 实际取 ' +
            picks.length + ' 只（⛔ 不从其它题材补位）。')
-        : ('⚠️ 本题材有龙位、且可买入（非竞价涨停、非连续停牌）的票不足 ' + tier.pickCount +
+        : ('⚠️ 本题材有龙位、且可买入（非连续停牌；竞价一字算可买）的票不足 ' + tier.pickCount +
            ' 只 ⇒ 实际取 ' + picks.length + ' 只（⛔ 不从其它题材补位）。')));
   }
-  if (abnormalCand) {
-    const _lv = classifyRange10(abnormalCand.pct);
-    notes.push('🚨 本题材的' + (abnormalCand.rank ? getDragonLabel(abnormalCand.rank) : '') +
-      abnormalCand.name + ' 十日涨幅（竞价口径）' + _lv.pctText +
-      ' ＞ ' + TVRB_RANGE10_CAP + '%（自定义禁选上限' +
-      (_lv.level === ABNORMAL_LEVEL_ABNORMAL
-        ? '；已达 ' + TVRB_RANGE10_ABNORMAL + '% 交易所【严重异常波动】'
-        : '，尚未到 ' + TVRB_RANGE10_ABNORMAL + '% 红线，但后果相同') +
-      '）⇒ 按第 ' + ABNORMAL_RULE_NO + ' 条判定【全场监管异动】：本块今天【不选股、不买】' +
-      '（⛔ 不顺延下一龙位 —— 总龙一影响范围波及所有票，换次强的没有意义；' +
-      '整个市场整片灰 + 空仓由收口统一叠加）。⚠️ 该票仍【照常列出】（用户口径：不用去掉），' +
-      '只是买点标签为【' + ABNORMAL_NO_BUY_TAG + '】。');
-  }
-
   return {
     // ── ① 决策看板形状的字段（finishBuyBlock / decorateDecisionRows / 通用装饰器要读的）──
     block: block,
@@ -2044,18 +2294,20 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
     //      整块灰化由 `buildCashAlert` 产出的 `cashAlert.show` 驱动视图既有的
     //      `.tvrb-buy-list.tvrb-ebb`（§6 同一套灰化），"不计入选出 N 只" 由
     //      `_applyAbnormalSweep` 清空 `out.buyNames` 实现。旧注释把人往不存在的实现上引。
-    abnormalPick: abnormalCand ? {
-      name: abnormalCand.name,
-      code: String(abnormalCand.code || '').trim(),
-      topic: String(block.topic || ''),
-      pct: classifyRange10(abnormalCand.pct).pct,
-      pctText: classifyRange10(abnormalCand.pct).pctText
-    } : null,
+    abnormalPick: null,
+    /**
+     * ★★ [DEV-RULE 2026-11-25 口径整体替换] `abnormalPick` **恒为 null，保留字段只为兼容历史存档 / 视图读取**。
+     *   旧语义：候选票十日涨幅 ＞ 97% ⇒ 本块「只展示这一只」、停止选股 ⇒ 写在这里。
+     *   新口径下这一段**整段删除**：偏离值要逐日腿、`_buildBlock` 这一层拿不到，
+     *   而且「谁越线 ⇒ 全场空仓」已经由 `_applyAbnormalSweep`（规则层）+ `applyAbnormalOverlay`（显示层）收口，
+     *   本条不再从中间截断选股（用户 11-25：「不含偏离放大（留意），因为这个不是很严重」）。
+     *   ⛔ 别在这里补一个「后置写入」的通道：会造出第二套判据。
+     */
     /**
      * ★★ [FULL-MARKET 2026-11-13 用户当场纠正] 「被跳过、顺延下一龙位」的**票级概念已撤销**：
-     *   > 自定义禁选上限 ⇒ 全场整片灰 + 空仓（⛔ 不顺延任何票、不换次强的买）。
+     *   > 越线 ⇒ 全场整片灰 + 空仓（⛔ 不顺延任何票、不换次强的买）。
      *   ⇒ 本字段恒为空数组。保留字段名只是为了兼容历史存档 / 视图读取（§11 不删字段、只撤语义），
-     *     真正踩线的那只票留在 `abnormalPick` 与 `picks` 里供核对（用户「不用去掉」）。
+     *     真正踩线的那只票由规则层的异动事实点名（`cashAlert.detail` 里）供核对（用户「不用去掉」）。
      */
     skippedAbnormalNames: [],
     /**

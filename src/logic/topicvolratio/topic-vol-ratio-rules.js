@@ -90,7 +90,11 @@ export {
   EBB_PICK_TONE, EBB_PICK_TITLE, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, EBB_SECOND_BUY_TAG,
   EBB_SECOND_BUY_TONE, EBB_SECOND_RULE_NO, EBB_SECOND_BUY_TITLE, CASH_NO_BUY_TAG,
   CASH_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_BLOCK_TOPIC,
-  WEAK_HUDDLE_TOP_N, WEAK_HUDDLE_TONE, WEAK_HUDDLE_TITLE, CATCH_UP_RULE_NO, CATCH_UP_TAG,
+  WEAK_HUDDLE_TOP_N, WEAK_HUDDLE_TONE, WEAK_HUDDLE_TITLE,
+  // ★★ [RULE-35 2026-11-18 用户口径] 第三十五条【30日涨幅抱团（补涨让路版）】
+  TOP30_HUDDLE_RULE_NO, TOP30_HUDDLE_TAG, TOP30_HUDDLE_TONE, TOP30_HUDDLE_BLOCK_TOPIC,
+  TOP30_HUDDLE_TOP_N, TOP30_HUDDLE_PICK_COUNT, TOP30_HUDDLE_TITLE,
+  CATCH_UP_RULE_NO, CATCH_UP_TAG,
   CATCH_UP_BLOCK_TOPIC, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT,
   CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, CATCH_UP_TONE, CATCH_UP_TITLE,
   TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG,
@@ -98,21 +102,39 @@ export {
   TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE, DIVERGE_DIP_TAG, DIVERGE_FOLLOW_TAG,
   DIVERGE_NO_BUY_TAG, DIVERGE_BUY_TONE, DIVERGE_NO_BUY_TONE, DIVERGE_RULE_NO,
   TVRB_CASH_ALERT_NONE, SWITCH_RULE_NO, NEW_DRAGON_TAG, NEW_DRAGON_TONE, NEW_DRAGON_TOP_N,
+  // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] 第二十八条【次日买】的标签 / 配色
+  NEXT_DAY_BUY_TAG, NEXT_DAY_BUY_TONE,
+  // ★★ [NEXT-DAY-BUY-2 2026-11-27 用户口径·九修] 次日承接块的标签 = 【继承买】（区分「昨天选、今天买」）
+  NEXT_DAY_CARRY_TAG, NEXT_DAY_CARRY_TONE,
   NEW_DRAGON_LOOKBACK_DAYS, NEW_DRAGON_CERTIFY_TOP_N, NEW_DRAGON_FAMILY_MIN_COUNT, RANGE10_BACKUP_TONE, RANGE10_BACKUP_TAG, RANGE10_BACKUP_LABEL,
-  // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条【监管异动 · 十日涨幅硬上限】的常量
-  ABNORMAL_RULE_NO, TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL, ABNORMAL_NO_BUY_TAG,
+  // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条【监管异动】的常量
+  //   ★ [2026-11-26] 旧的 `TVRB_RANGE10_CAP` / `TVRB_RANGE10_ABNORMAL` 已随旧口径一起删除，
+  //     ⛔ 不要再从这里（或任何地方）导出「自定义涨幅上限」。
+  ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG,
   ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, ABNORMAL_KIND_STOCK,
   TVRB_ABNORMAL_NONE,
   // ★★ [TOPIC-INNER-SELECT 2026-11-17 用户口径] 第二十九条【灰块】的覆盖式标签 / 配色
   SECOND_TOPIC_VOLWEAK_NO_BUY_TAG, SECOND_TOPIC_VOLWEAK_NO_BUY_TONE,
 } from './tvrb-constants.js';
 
-// ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条的【唯一判定实现】（纯函数，可单测）：
-//   classifyRange10 = 分级（ok / near / abnormal，阈值 [CAP-97] 97 / 100 只在 tvrb-constants 定义）；
-//   resolveAbnormalFact = 拼标语事实。⛔ 别在本文件写死阈值数字。
+// ★★ [DEV-RULE 2026-11-25 口径整体替换] 第三十四条 / 第三十六条的【唯一判定实现】（纯函数，可单测）：
+//   classifyDeviation   = 官方偏离值 → 分级（unknown / ok / near / abnormal）；
+//   isOverOfficialRedLine = 是否越「严重异常波动」红线（第三十四条唯一触发尺子）；
+//   resolveAbnormalFact = 拼标语事实。
+//   ⛔ 旧口径的分级函数（按原始涨幅 95/97 分级）已整体删除，⛔ 不要加回来；
+//   ⛔ 别在本文件写死任何阈值数字（阈值只在 abnormal-deviation#DEV_THRESHOLDS）。
 export {
-  classifyRange10, isOverRange10Cap, resolveAbnormalFact,
+  classifyDeviation, isOverOfficialRedLine, isDeviationNearOrOver,
+  // ★★ [MARKET-DRAGON-ONLY 2026-11-25] `pickRedLineSource` 已随「从一批票里挑越线最严重那只」
+  //   的错口径一起删除（判定对象唯一是市龙一）⇒ 这里同步去掉，⛔ 不要再从别处补回来。
+  devPctText, resolveAbnormalFact,
 } from './abnormal-10d.js';
+export {
+  deviationRuleStage, isDeviationRuleHit, pickSevereDeviation,
+  deviationRuleBuyNote, deviationSellNote, deviationRuleGapText,
+  DEV_NEAR_RULE_TAG, DEVIATION_SELL_TAG, DEV_RULE_NO,
+  DEV_OFFICIAL_RED_LINE_10D, DEV_OFFICIAL_RED_LINE_30D,
+} from '../auction/deviation-rule-facts.js';
 
 export {
   classifyMainTopic, detectEbbDay, secondEbbTopicOfPrevDay, buildEbbDayRecord,

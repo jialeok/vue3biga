@@ -30,7 +30,89 @@
 
 import { _dbgLog } from '../debug-log.js';
 
-const QT_BASE = 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get';
+// ════════════════════════════════════════════════════════════════════════════════════════
+// 【2026-11-18 线上事故：`web.ifzq.gtimg.cn` 开始整站返回 WAF 挑战页】
+//   现象：早盘竞价看板「30日涨幅」toggle 打开后行上一直空白、也不按涨幅排序
+//        （排序键就是这列数值，取不到 ⇒ 全部 null ⇒ 保持原序，看起来「toggle 没反应」）。
+//   实测（同一台机器、同一天）：
+//     · `web.ifzq.gtimg.cn/appstock/app/fqkline/get?...` ⇒ **HTTP 501** + 326 字节 HTML
+//       `<script>var i=location.href;var v=window.btoa?...`（腾讯 WAF 的 JS 挑战页），
+//       带 UA / Referer / Origin / Accept 任何组合都一样（⛔ 不是我们请求头写错）；
+//     · 同路径换成 `ifzq.gtimg.cn`（去掉 `web.`）⇒ **HTTP 200 + JSON**，
+//       响应头 `access-control-allow-origin: *`（浏览器可直连），32 只批量实测 **32/32、0.7 秒**。
+//   ⇒ 本模块改成【多 host 失败切换】：默认先打 `ifzq.gtimg.cn`，不行自动换另一个，并锁定本次可用那个。
+//     ⚠️ 挑战页是 HTML ⇒ 必须按「content-type / 首字符」判 JSON，⛔ 不能只看 `resp.ok`
+//        （501 会被 `ok` 挡住，但 WAF 也可能 200 返回挑战页 —— 两条都要判）。
+//     这条修复对下游三条链同时生效（30日涨幅 / 趋势图补点 / 逐日腿补缺），因为它们共用本模块。
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+const QT_PATH = '/appstock/app/fqkline/get';
+
+/**
+ * 可用 host 列表（按优先级）。
+ * ⚠️ 顺序有意义：`ifzq.gtimg.cn` 是 2026-11-18 实测**唯一**还回 JSON 的那个，
+ *     `web.ifzq.gtimg.cn` 保留作兜底（万一哪天反过来）。
+ */
+const QT_HOSTS = ['https://ifzq.gtimg.cn', 'https://web.ifzq.gtimg.cn'];
+
+/** 会话内优先使用的 host 下标（成功后锁定，失败的 host 不再每次先撞一遍） */
+let _hostIdx = 0;
+
+/**
+ * 拉一次 JSON：按 host 列表依次尝试，任一成功即锁定该 host。
+ *
+ * @param {string} qs 查询串（如 `param=sh600519,day,2026-09-01,2026-11-18,320,qfq`）
+ * @param {number} timeoutMs 单次超时
+ * @returns {Promise<object>} 解析后的 JSON（失败抛最后一个错误，由调用方按「取不到」处理）
+ */
+async function _fetchQtJson(qs, timeoutMs) {
+    let lastErr = null;
+    for (let k = 0; k < QT_HOSTS.length; k++) {
+        const idx = (_hostIdx + k) % QT_HOSTS.length;
+        const url = QT_HOSTS[idx] + QT_PATH + '?' + qs;
+        const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        const timer = ctrl ? setTimeout(function () { ctrl.abort(); }, timeoutMs) : null;
+        let resp;
+        try {
+            resp = await fetch(url, {
+                headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://gu.qq.com/' },
+                signal: ctrl ? ctrl.signal : undefined
+            });
+        } catch (e) {
+            lastErr = e;
+            continue;
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
+        if (!resp.ok) {
+            lastErr = new Error('qt HTTP ' + resp.status);
+            continue;
+        }
+        let text;
+        try {
+            text = await resp.text();
+        } catch (e) {
+            lastErr = e;
+            continue;
+        }
+        const ctype = String((resp.headers && resp.headers.get && resp.headers.get('content-type')) || '');
+        // ★ WAF 挑战页：HTML（含 `200 text/html` 的软拦截）⇒ 换 host，⛔ 别当数据解析
+        if (ctype.indexOf('html') !== -1 || text.charAt(0) !== '{') {
+            lastErr = new Error('qt 非 JSON 响应（疑似 WAF 挑战页，host=' + QT_HOSTS[idx] + '）');
+            continue;
+        }
+        let parsed;
+        try {
+            parsed = JSON.parse(text);
+        } catch (e) {
+            lastErr = new Error('qt JSON 解析失败');
+            continue;
+        }
+        _hostIdx = idx;                 // 锁定可用 host
+        return parsed;
+    }
+    throw lastErr || new Error('qt 全部 host 均不可用');
+}
 
 /** 6 位代码 → 腾讯符号（与 db/edge/range20-precompute/index.ts#fetchQtBars 同一条规则，⛔ 两处别改岔） */
 export function qtSymOf(code) {
@@ -67,20 +149,8 @@ export async function fetchQtDailyBars(codes6, fromYmd, toYmd, opts) {    const 
             const sym = qtSymOf(code);
             if (!sym) continue;
             try {
-                const url = QT_BASE + '?param=' + sym + ',day,' + fromYmd + ',' + toYmd + ',320,qfq';
-                const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-                const timer = ctrl ? setTimeout(function () { ctrl.abort(); }, timeoutMs) : null;
-                let resp;
-                try {
-                    resp = await fetch(url, {
-                        headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://gu.qq.com/' },
-                        signal: ctrl ? ctrl.signal : undefined
-                    });
-                } finally {
-                    if (timer) clearTimeout(timer);
-                }
-                if (!resp.ok) throw new Error('qt HTTP ' + resp.status);
-                const j = await resp.json();
+                // ★ 2026-11-18：host 由 `_fetchQtJson` 统一做失败切换（见文件头注释），本处只拼查询串。
+                const j = await _fetchQtJson('param=' + sym + ',day,' + fromYmd + ',' + toYmd + ',320,qfq', timeoutMs);
                 const d = (j && j.data && j.data[sym]) || {};
                 const rows = d.qfqday || d.day || [];
                 const bars = [];
@@ -155,20 +225,8 @@ export async function fetchQtIndexBars(indexCodes, fromYmd, toYmd, opts) {
             try {
                 // 与个股同一形态 `...,320,qfq`：2026-11-14 实测指数也认这个形态（返回 day 段）。
                 // ⛔ 别改成 `,320,` 或省略末位 —— 未验证的形态一律不用。
-                const url = QT_BASE + '?param=' + sym + ',day,' + fromYmd + ',' + toYmd + ',320,qfq';
-                const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-                const timer = ctrl ? setTimeout(function () { ctrl.abort(); }, timeoutMs) : null;
-                let resp;
-                try {
-                    resp = await fetch(url, {
-                        headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://gu.qq.com/' },
-                        signal: ctrl ? ctrl.signal : undefined
-                    });
-                } finally {
-                    if (timer) clearTimeout(timer);
-                }
-                if (!resp.ok) throw new Error('qt HTTP ' + resp.status);
-                const j = await resp.json();
+                // host 走同一个失败切换（`_fetchQtJson`），2026-11-18 起 `web.` 子域已不可用。
+                const j = await _fetchQtJson('param=' + sym + ',day,' + fromYmd + ',' + toYmd + ',320,qfq', timeoutMs);
                 const d = (j && j.data && j.data[sym]) || {};
                 const rows = d.qfqday || d.day || [];
                 const bars = [];

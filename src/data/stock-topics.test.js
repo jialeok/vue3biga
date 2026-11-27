@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { state } from '../logic/app-state.js';
-import { invalidateTopicCache, buildTopicCache, lookupTopicsByName } from './stock-topics.js';
+import { invalidateTopicCache, buildTopicCache, lookupTopicsByName, rebuildTopicCacheForHotData, isHotDerivedTopicsReady } from './stock-topics.js';
 
 // ===== 共享题材库的【权威性】回归测试（2026-09-19 事故）=====
 //
@@ -24,12 +25,14 @@ beforeEach(() => {
     _saved.auction = state._auctionMemCache;
     _saved.hot = state._hotAuctionData;
     _saved.built = state._topicCacheBuilt;
+    _saved.hotReady = state._hotDerivedTopicsReady;
 });
 
 afterEach(() => {
     state._cloudTopicsCache = _saved.cloud;
     state._auctionMemCache = _saved.auction;
     state._hotAuctionData = _saved.hot;
+    state._hotDerivedTopicsReady = _saved.hotReady;
     invalidateTopicCache();
     if (_saved.built) buildTopicCache();
 });
@@ -104,5 +107,82 @@ describe('共享题材库权威性（历史 note 不得让已删题材复活）'
         invalidateTopicCache();
         buildTopicCache();
         expect(asText('桂林旅游')).toBe('旅游,人工智能');
+    });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ★★ [HOT-TOPIC-SYNC 2026-11-25] hot 到货后题材缓存统一重建（整类根因，非单只票）
+//
+//   原尚股份题材只在 hot_stocks.note（07-31 `摘帽+汽车物流+跨境电商+氢能源`），
+//   stock_topics 库 / 当日 auction_watchlist 都没有 ⇒ 只有 buildTopicCache 扫 hot 才拿得到。
+//   题材缓存幂等、常早于 hot 数据首次建成 ⇒ 不 invalidate+build 就永远缺（显示 '-'），
+//   直到某个无关 invalidate 偶然重建才变「跨境电商」（大消费 3→4 只、九阳股份进出）。
+// ══════════════════════════════════════════════════════════════════════════════
+describe('hot 到货后重建题材缓存（HOT-TOPIC-SYNC）', () => {
+    /** 复现事故形态：hot 数据到货【前】已幂等建好缓存，此时扫不到 hot note 题材 */
+    function setupHotLateArrival() {
+        state._cloudTopicsCache = {};                       // 库里没有原尚股份
+        state._auctionMemCache = {
+            '2026-11-25': [{ stock: '杭州解百', note: '+9.9%(大消费)', topics: '' }]
+        };
+        state._hotAuctionData = {};                          // 到货前：hot 空
+        state._hotDerivedTopicsReady = false;
+        invalidateTopicCache();
+        buildTopicCache();                                   // 早建缓存（幂等锁死）
+    }
+
+    it('① hot 到货前：只在 hot note 里的题材查不到（显示 - 的成因）', () => {
+        setupHotLateArrival();
+        expect(asText('原尚股份')).toBe('');
+        expect(isHotDerivedTopicsReady()).toBe(false);
+    });
+
+    it('② hot 到货 + rebuild ⇒ 题材进缓存 + 就绪标志置位', () => {
+        setupHotLateArrival();
+        // 模拟 hot 数据到货
+        state._hotAuctionData = {
+            '2026-07-31': [{ stock: '原尚股份', note: '+1.86%(摘帽+汽车物流+跨境电商+氢能源)', topics: '' }]
+        };
+        rebuildTopicCacheForHotData();
+        const t = asText('原尚股份');
+        expect(t).toContain('跨境电商');
+        expect(t).toContain('汽车物流');
+        expect(isHotDerivedTopicsReady()).toBe(true);
+    });
+
+    it('③ 单独 buildTopicCache（不 invalidate）无法让 hot 题材进来（幂等反例）', () => {
+        setupHotLateArrival();
+        state._hotAuctionData = {
+            '2026-07-31': [{ stock: '原尚股份', note: '+1.86%(跨境电商)', topics: '' }]
+        };
+        buildTopicCache();                                   // 幂等直接返回旧缓存
+        expect(asText('原尚股份')).toBe('');
+        // 必须先 invalidate 再 build（rebuildTopicCacheForHotData 内部正是如此）
+        rebuildTopicCacheForHotData();
+        expect(asText('原尚股份')).toContain('跨境电商');
+    });
+
+    it('④ hot 读取失败（空数据）也置就绪标志（§10 读过就算落地，⛌ 不永久挂死买点）', () => {
+        setupHotLateArrival();
+        state._hotAuctionData = {};                          // 读失败 / 空库
+        rebuildTopicCacheForHotData();
+        expect(isHotDerivedTopicsReady()).toBe(true);
+    });
+
+    it('⑤ 三条到货路径（刷新 / Realtime / 手动登录）都接了统一重建入口（锁调用形态，⛔ 不锁注释）', () => {
+        // 静态锁的是【调用/导入形态】而非裸标识符或注释（esbuild 会删注释，11-25 踩过）。
+        const bootstrap = readFileSync('src/composables/useAppBootstrap.js', 'utf8');
+        const realtime = readFileSync('src/data/hot-stocks-realtime.js', 'utf8');
+        const login = readFileSync('src/components/LoginOverlay.vue', 'utf8');
+        const settle = readFileSync('src/logic/topicvolratio/buy-settle.js', 'utf8');
+        const gate = readFileSync('src/composables/useTopicVolRatioBoard.js', 'utf8');
+
+        expect(bootstrap).toContain('rebuildTopicCacheForHotData');
+        expect(bootstrap).toContain('loadHotStocksFromCloud()');
+        expect(realtime).toContain('rebuildTopicCacheForHotData()');
+        expect(login).toContain('rebuildTopicCacheForHotData()');
+        // 门控第⑱项 + 传参闭环
+        expect(settle).toContain('o.hotDerivedTopicsReady === false');
+        expect(gate).toContain('hotDerivedTopicsReady: isHotDerivedTopicsReady()');
     });
 });

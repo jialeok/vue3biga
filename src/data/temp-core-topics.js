@@ -57,19 +57,26 @@ export function clearTempCoreTopicsCache() {
 }
 
 function _normalize(row) {
-  if (!row || !row.name || !row.start_date) return null;
+  if (!row || !row.name) return null;
+  // ★ 2026-11-26 事故：本函数曾被调用两次（_readAll 里一次、_putRows 里再一次），
+  //   而它只认数据库的 snake_case 字段 ⇒ 第二次拿到的是已归一化的对象（字段已是 startDate）
+  //   ⇒ `!row.start_date` 直接 return null ⇒ 全部行被过滤掉 ⇒ 列表永远为空、还不报错。
+  //   ⇒ 这里两种命名都认，保证幂等（归一化多次结果不变）。
+  const startRaw = row.start_date !== undefined ? row.start_date : row.startDate;
+  if (!startRaw) return null;
   let syns = row.synonyms;
   if (typeof syns === 'string') {
     try { syns = JSON.parse(syns); } catch (e) { syns = syns.split(','); }
   }
   const id = Number(row.id);
+  const disabledRaw = row.disabled_from !== undefined ? row.disabled_from : row.disabledFrom;
   return {
     id: isFinite(id) && id > 0 ? id : null,
     name: String(row.name).trim(),
     synonyms: (Array.isArray(syns) ? syns : []).map(function(s) { return String(s == null ? '' : s).trim(); }).filter(Boolean),
-    startDate: String(row.start_date).slice(0, 10),
-    disabledFrom: row.disabled_from ? String(row.disabled_from).slice(0, 10) : null,
-    updatedAt: row.updated_at || ''
+    startDate: String(startRaw).slice(0, 10),
+    disabledFrom: disabledRaw ? String(disabledRaw).slice(0, 10) : null,
+    updatedAt: row.updated_at || row.updatedAt || ''
   };
 }
 
@@ -98,6 +105,20 @@ export async function ensureTempCoreTopics() {
   if (Date.now() < _cooldownUntil) {
     throw new Error('临时核心词读取冷却中（core_topic_temp 表可能尚未创建）');
   }
+  return _startRead();
+}
+
+/**
+ * 真正发起一次网络读（单飞）。
+ * ★ 2026-11-26 用户报障「临时题材明明保存了，弹窗里永远空、也不报错」的根因就在这里：
+ *   旧 refreshTempCoreTopics 只是把 _cooldownUntil 清 0，却**没清 _loaded**，
+ *   而 ensure 的第一行是 `_loaded && now >= _cooldownUntil ⇒ 直接返回 _rows` ——
+ *   于是「启动那次读失败 ⇒ _loaded=true 且 rows=[]」之后，refresh 也永远不会再发请求，
+ *   界面永远是空列表，而且因为没抛错，连红字提示都没有。
+ *   ⇒ 强制重读必须走本函数（无条件发请求），⛔ 不能再绕回 ensure 的早退分支。
+ */
+function _startRead() {
+  if (_inflight) return _inflight;
   const p = _readAll().then(function(rows) {
     _putRows(rows);
     _dbgLog('[TEMP-CORE] 从云端加载 ' + rows.length + ' 条临时核心词');
@@ -115,11 +136,10 @@ export async function ensureTempCoreTopics() {
   return p;
 }
 
-/** 强制重读（Realtime 回调 / 写入后对账） */
+/** 强制重读（Realtime 回调 / 写入后对账 / 弹窗打开）：⛔ 绕过「冷却」与「已加载」两道早退 */
 export async function refreshTempCoreTopics() {
-  _inflight = null;
   _cooldownUntil = 0;
-  return ensureTempCoreTopics();
+  return _startRead();
 }
 
 function _mergeRow(row) {
@@ -151,7 +171,17 @@ export async function upsertTempCoreTopic(input) {
     start_date: startDate,
     updated_at: new Date().toISOString()
   };
-  if (isFinite(id) && id > 0) payload.id = id;
+  if (isFinite(id) && id > 0) {
+    payload.id = id;
+  } else {
+    // [TEMP-CORE-DEDUP 2026-11-26] 同名临时题材 ⛔ 不再 insert 第二条。
+    //   实测「羊字辈」被点了两次 ⇒ 库里 id 4 / 5 两行一模一样 ⇒
+    //   生效期同一题材算两遍、列表也出现两条，用户看到的是「怎么有两个」。
+    //   没传 id 时：同名行已存在 ⇒ 更新它（设置日 / 同义词），不存在才新增。
+    try { await ensureTempCoreTopics(); } catch (e) { /* 读失败就按新增走，§10 不猜已有数据 */ }
+    const exist = _rows.value.find(function(r) { return r.name === name; });
+    if (exist && exist.id) payload.id = exist.id;
+  }
   const { data, error } = await sb.from('core_topic_temp').upsert([payload], { onConflict: 'id' }).select(SELECT_FIELDS);
   if (error) throw error;
   const row = data && data[0];

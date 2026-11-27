@@ -30,6 +30,11 @@ export const state = reactive({
     // ★ 2026-09-18：题材库的归一化别名索引 {归一化名: Set(题材)}（见 data/stock-topics.js）
     _topicCacheNorm: null,
     _topicCacheBuilt: false,
+    // ★★ [HOT-TOPIC-SYNC 2026-11-25] hot_stocks note 派生题材是否已并入题材缓存。
+    //   只存在于 hot note 里的题材（如原尚股份「跨境电商」）必须等 hot 数据到货 + 缓存重建后
+    //   才算就绪；买点定稿门控据此挂起，避免题材还是 '-' 时定稿（3只）→ 重建后变 4 只的跳变。
+    //   由 data/stock-topics.js#rebuildTopicCacheForHotData 在重建完成后置 true（reactive，computed 可追踪）。
+    _hotDerivedTopicsReady: false,
     _justPushedAuction: false,
     _auctionWatchlistShadowIndex: {},
     _cloudTopicsCache: null,

@@ -22,7 +22,8 @@
         第 1 行：票（含档位小标签） | 10日偏离 | 30日偏离
         第 2 行：股价再涨约 +5.2%（数值条件标红 + 灰字「同期指数不动 · 条件估算」）
                  → 灰字「自核 30日：…」→ 灰字「距 200% 差 14.5 点」→ 灰字「指数 ±1% ⇒ …（β…）」
-      顶部「计算公式（可自核）」五条：三条等式 + 指数敏感度 β 通式与窗口滚动声明 + ±1%/±2% 具体算例。
+      顶部「计算公式（可自核）」七条：三条等式 + 指数敏感度 β 通式与窗口滚动声明 + ±1%/±2% 具体算例
+      + 负方向（杀跌）同一套算法与 −50%/−70% 阈值 + 官方三条判据里本面板只算②③（[DEV-BASIS/DEV-NEG-WARN]）。
 
     ★ [DEV-LAYOUT 2026-11-15 用户「排版出现问题，右边文字超出了看板边界」]
       手机窄屏上第一列「票名 + 指数标签 + 档位 chip」把整张表撑破父容器，10日/30日两列被裁。
@@ -48,6 +49,26 @@
     <div class="tvrb-dev-board-head">
       <span>{{ meta.title }}</span>
       <span class="tvrb-dev-board-sub">{{ meta.subText }}</span>
+    </div>
+    <!-- ★★ [DEV-BASIS-DEFAULT 2026-11-24 用户第二轮原话]
+         「不用点竞价口径，默认是竞价口径，点开后才变成收盘口径。
+           你应该把竞价口径 toggle 变成收盘口径，我想看收盘口径时点开就可以看了。」
+         ⇒ 按钮固定叫「收盘口径」：默认（竞价口径）不高亮，点一下 → 看收盘口径（高亮）。
+           `closeView` 由 Logic 层给（当前是不是在看收盘口径），⛔ 视图不判时间、不判数字、
+           不重新取数（§21 / §32）。 -->
+    <div class="tvrb-dev-basis-row">
+      <button
+        type="button"
+        class="tvrb-dev-basis-btn"
+        :class="meta.closeView ? 'is-on' : ''"
+        :disabled="!meta.canToggle"
+        :title="meta.toggleHint"
+        @click="$emit('toggle-basis')"
+      >
+        收盘口径
+      </button>
+      <span class="tvrb-dev-basis-text">{{ meta.basisText }}</span>
+      <span class="tvrb-dev-basis-note">{{ meta.toggleNote }}</span>
     </div>
     <!-- ★★ [IDX-LABEL 2026-11-14 用户「对应指数指的是什么？顺便在提示板上面说明下」]：
          这块回答「减的是谁」，下面公式块回答「怎么减」。四行映射由 Logic 层给
@@ -140,7 +161,7 @@
               <span
                 v-if="r.needValueText"
                 class="tvrb-dev-need-main"
-              >股价再涨约 <span
+              >股价再{{ r.needLabel }}约 <span
                 class="tvrb-dev-need-value"
                 :class="r.needTone === 'alert' ? 'tvrb-dev-need-alert' : ''"
               >{{ r.needValueText }}</span><span class="tvrb-dev-need-hint">{{ r.needHintText }}</span></span>
@@ -186,13 +207,16 @@ defineProps({
   /**
    * 有序行，一只票一个元素（视图负责展开成两行）：
    * [{ name, indexLabelText, indexLabelTitle, dev10Text, dev30Text, gapText, calcText,
-   *    needValueText, needHintText, needTone, gapTailText, indexMoveText,
+   *    needValueText, needLabel, needHintText, needTone, gapTailText, indexMoveText,
    *    stageText, stage, tone, ok, title }]
    * 文案已拼好（§21）
    */
   rows: { type: Array, default: () => [] },
-  /** { visible, title, subText, warnText, ready, total, basisText,
+  /** { visible, title, subText, warnText, ready, total, basis, basisText,
+   *    auctionView, closeView, canToggle, toggleHint, toggleNote,
    *    indexNoteLines, formulaLines } —— 全部由 Logic 层算好 */
   meta: { type: Object, default: () => ({}) }
 });
+// ★ [DEV-BASIS] 只发一个「切换口径」事件，具体切哪套由 Logic 层决定（§21 视图零计算）
+defineEmits(['toggle-basis']);
 </script>

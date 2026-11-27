@@ -91,11 +91,18 @@ import { readAuctionLegRangeMap } from '../logic/auction/range-auction-leg.js';
 import { readAuctionNoteTopicsForDate } from '../data/auction-note-topics.js';
 import { parseNoteTopics, buildAbnormalTopicBan } from '../logic/topicvolratio/abnormal-topic-ban.js';
 import { TVRB_ABNORMAL_TOPIC_BAN_NONE } from '../logic/topicvolratio/tvrb-constants.js';
-import { isOverRange10Cap } from '../logic/topicvolratio/abnormal-10d.js';
-// ★ [ABN-TB] 「全市场最高票」的判据与规则层【同一把尺子】（§6）：maxRangePctOf + 只主板过滤。
-//   ⛔ 组合式不另写一遍「扫 Map 找最大值 / 按代码前缀判主板」。
-import { maxRangePctOf, makeAbnMainBoardFilter } from '../logic/topicvolratio/tvrb-plan.js';
-import { isMainBoardRankEligible } from '../logic/auction/limit-up.js';
+// ★★ [DEV-RULE 2026-11-25] 三十四条·b 的尺子从「十日涨幅 ＞97%（自定义）」换成
+//   「官方偏离值越「严重异常波动」红线」⇒ 判据统一走 `deviation-rule-facts.js`（§6 一把尺子）。
+import { isDeviationOverRedLine } from '../logic/auction/deviation-rule-facts.js';
+// ★★ [ABN-TB-MKTDRAGON 2026-11-26 用户口径 · 逐字] 三十四·b 的 D-2 触发源也收成【市龙一】：
+//   「11 月 24 日北纬科技不是市龙一（30 日涨幅最高的那只），它只是个股市异动行为，
+//     不能按市龙一的标准判监管异动，更不能影响题材。当时市龙一是冰山冷热，它是正常的。」
+//   ⇒ 判据与第三十五条 / 正文的市龙一【同一把尺子】（§6）：9:26 竞价口径 30 日涨幅榜
+//     `buildTvrbAuctionBoard30`（只主板 + 腿数达标 + 当日 9:25 名单内 + 降序），取 `rank[0]`。
+//   ⛔ 旧「D-2 十日涨幅最高票」已废除（那会把个股异动误升格成市龙一级异动）。
+import { readAuctionLegRange30Pct } from '../logic/auction/range30-auction-leg.js';
+import { readMarketMetricsForDate } from '../data/market-metrics.js';
+import { buildTvrbAuctionBoard30 } from '../logic/topicvolratio/tvrb-auction-board30.js';
 // ★★ [R20-926 2026-10-24 用户口径] 买点侧【20日涨幅 · 9:26 竞价口径】的主板名次（说明文案用）：
 //   用户原话「买点侧的10日涨幅和20日涨幅的股票，如果有入选时也应该按照9点26分的口径……
 //     在上面说明时间他们的涨幅是多少排名第几就行了」。
@@ -118,6 +125,15 @@ import {
   getTvrbAuctionBoardToken,
   hasTvrbAuctionBoardVerdict
 } from '../logic/topicvolratio/tvrb-auction-board.js';
+// ★★ [RULE-35 2026-11-18 用户口径] 第三十五条【30日涨幅抱团】的候选池（9:26 竞价口径 · 只主板）。
+//   与 20 日榜同款 API：ensure 触发计算（幂等 / 会话缓存 / 单飞）→ Token 建立响应式依赖 →
+//   get 读发布结果（ready=false ⇒ 判不出，规则层不接管并如实标注，§10）。
+import {
+  ensureTvrbAuctionBoard30,
+  getTvrbAuctionBoard30,
+  getTvrbAuctionBoard30Token,
+  hasTvrbAuctionBoard30Verdict
+} from '../logic/topicvolratio/tvrb-auction-board30.js';
 // ★ [EBB-R20 2026-10-20 用户口径] 20日涨幅前五（总龙一~五）—— 退潮判定的总龙与买点侧替补的【唯一】来源：
 //   ensureRange20Leaders 触发计算（幂等 + 会话缓存 + 单飞，与「20日涨幅」toggle 共享同一份）；
 //   getRange20Leaders 读发布结果（null = 该日还没结论，⛔ 不等于「没有总龙」）；
@@ -149,7 +165,7 @@ import {
 import { readRange20Rows, pickUsableRows } from '../data/stock-range20-cache.js';
 // 名册兜底取代码（云表行里没有 code，K 线请求必须有 6 位代码）——与采集层同一个入口（§6）
 import { getStockCode } from '../data/stock-code-map.js';
-import { beijingTodayStr } from '../logic/auction/auction-pull-window.js';
+import { beijingTodayStr, beijingNowHHMM } from '../logic/auction/auction-pull-window.js';
 // ★ [DIVERGE 2026-10-20 用户口径] 市场总龙一【首次分歧】判定：
 //   buildLeaderDivergence = 纯函数判定（首板 / 首次分歧 / 分歧转一致，§15 唯一实现）；
 //   shouldGateBuySide    = 买点侧「该不该先挂占位」的唯一判据（纯函数，见其 JSDoc）；
@@ -232,7 +248,8 @@ import { encodePlanSnapshot, decodePlanSnapshot, PLAN_SNAPSHOT_MAX_BYTES } from 
 //   核心词管理增删改同义词会改变题材分组 ⇒ 选票结论本来就该跟着变（用户主动纠错）。
 //   ⇒ 存档从「只写今天 / 只写一次」改为「任何日期都存 / 规则指纹变了就重算覆盖」。
 import {
-  buildRulesFingerprint, buildInputsFingerprint, resolvePlanSnapshotFreshness, shouldPersistPlanSnapshot
+  buildRulesFingerprint, buildInputsFingerprint, resolvePlanSnapshotFreshness, shouldPersistPlanSnapshot,
+  isSnapshotPlaceholderFrame
 } from '../logic/topicvolratio/plan-snapshot-rules.js';
 import { readPlanSnapshot, writePlanSnapshot, isPlanSnapshotInputsSigSupported } from '../data/tvrb-plan-snapshot.js';
 // ★★ [SELL-LIVE / TICK-LIVE 2026-11-12] 冻结的「买点结论」怎么和「实时事实」合流。
@@ -241,6 +258,8 @@ import { readPlanSnapshot, writePlanSnapshot, isPlanSnapshotInputsSigSupported }
 //   分笔装饰（异步抓取，定稿时常常还没到）**本来就必须在定稿后继续变**。
 //   ⇒ 冻结只保留买点结论；卖点段与分笔装饰恒取实时（§6：判据唯一实现在这个模块里）。
 import { eachBuyBlock, overlayLiveOnFrozen, collectBuyNames } from '../logic/topicvolratio/plan-live-overlay.js';
+// ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] 第二十八条的【次日承接】名单读取（纯函数，§6 单一真相）
+import { collectNextDayBuy, buildNextDayCarryBlock } from '../logic/topicvolratio/nextday-buy.js';
 // ★★ [ABNORMAL-ALL 2026-11-13 用户口径] 监管异动是【显示层总约束】：历史日读定稿存档（v4）
 //   时第三十四条规则层结果会被整个丢弃 ⇒ 上屏前统一叠加一次「空仓 + 全灰 + 不买」（⛔ 不改写存档）。
 import { applyAbnormalOverlay, isAbnormalAllGray, buildAbnormalFactFromMaps } from '../logic/topicvolratio/abnormal-overlay.js';
@@ -277,14 +296,16 @@ import { _isAuctionWatchlistIndexReady } from '../data/watchlist-and-metrics.js'
 //   getCoreTopics() = 核心管理里那张表（用户「我在核心管理里把文化传媒放到 AI应用 那个大类了」）；
 //   getCoreTopicsVersion() = 响应式版本号（云端加载完成 / 用户改完核心词 ⇒ computed 自动重算）。
 //   ⛔ 规则层拿到的永远是「数组」而不是「自己去读表」（§5 Data 层职责）。
-import { getCoreTopics, getCoreTopicsForDate, getCoreTopicsVersion, isCoreTopicsCloudLoaded } from '../logic/topic/rules.js';
+import { getCoreTopics, getCoreTopicsForDate, getCoreTopicsVersion, isCoreTopicsCloudLoaded, getHiddenTopicTokensForDate, getTempCoreWindowsForDate } from '../logic/topic/rules.js';
+// [TEMP-CORE-SCOPE 2026-11-27] 老题材取词后按展示日隔离临时词（题材库并集缓存没有日期维度）
+import { filterHiddenTopicText } from '../logic/topic/temp-core-topic.js';
 // [TEMP-CORE 2026-11-17] 临时核心词：只在输入侧按当日换一张词表（规则 〇·a）
 import { getTempCoreTopicsToken, isTempCoreTopicsLoaded } from '../data/temp-core-topics.js';
 import { makeCoreTopicResolver } from '../logic/topic/core-category.js';
 // ★★ [BUY-SETTLE-2 2026-10-31 用户口径] 题材库（stock_topics）「就绪了吗」——
 //   买点侧门控的输入之一。判据语义见其 JSDoc：**为空即「题材分类结果不可信」**（§10 读取失败 ≠ 空）。
 //   ⛔ 别用 isCloudTopicsLoaded（那个回答的是「现在写回云端安全吗」，两个判据用途不同）。
-import { isTopicLibraryReady, isCloudTopicsLoaded, getTopicLibraryDigest, getTopicLibraryVersion, lookupTopicsByName, buildTopicCache } from '../data/stock-topics.js';
+import { isTopicLibraryReady, isCloudTopicsLoaded, getTopicLibraryDigest, getTopicLibraryVersion, lookupTopicsByName, buildTopicCache, isHotDerivedTopicsReady } from '../data/stock-topics.js';
 // ★ 分笔：与「分笔买卖」看板【同一份取数编排 + 同一份逐行实现】（§6 单一真相，⛔ 不另写一份）
 import { decorateTickRow } from '../logic/tick/tick-minute.js';
 import {
@@ -391,6 +412,68 @@ function _skipMapOf(date) {
  * §10：库还没建好 ⇒ 先建一次（幂等、纯内存）；仍然查不到 ⇒ 返回空串（该票不参与票级命判，
  *   但【块级】判据照常生效 —— ⛔ 不因为一只票查不到库就把整条规则关掉）。
  */
+/**
+ * ★★ [TEMP-CORE-SCOPE-2 2026-11-27 用户报障] 退潮行【落库的题材串】也来自跨日期并集
+ * （`collectDecisionData._libTopicOf` 读 stock_topics + buildTopicCache 并入近 66 天 note）⇒
+ * 11-18 才建的临时词「羊字辈」早就写在 11-04 / 11-13 那几行的 leader_topic 里。
+ * 不按【该行日期】过滤，第二十八条仍会把字辈线当退潮题材，写出
+ * 「【羊字辈】（老龙一 东方海洋）二次确认退潮后第 2 个交易日 = 切换日」。
+ * ⚠️ 只过滤读取值（显示 / 派生），⛔ 不改 tvrb_ebb_days 表（§11）。
+ * @param {string} date 该退潮行所属交易日
+ * @param {string} topic 落库题材串
+ * @returns {string}
+ */
+function _ebbTopicOnDate(date, topic) {
+  const raw = String(topic == null ? '' : topic);
+  if (!raw) return raw;
+  const ht = getHiddenTopicTokensForDate(date);
+  return ht.size > 0 ? filterHiddenTopicText(raw, ht) : raw;
+}
+
+/**
+ * ★★ [EBB-TOPIC-MEMBER 2026-11-27] 票名 ⇒ 该票题材串，且按【展示日】隔离临时题材词。
+ *
+ * 题材库（stock_topics + 近 66 天 note 并集）是跨日期的：11-18 才建的临时词「羊字辈」会出现在
+ * 11-16 的票题材串里。第二十条的【题材字段级】排除一旦吃到这种回灌，就会把当时根本不存在的
+ * 退潮题材字段当成命中 ⇒ 误杀。⇒ 与 `_ebbTopicOnDate` 同一条口径：只过滤读取值（§11 不改库）。
+ *
+ * @param {string} date 展示的交易日
+ * @returns {(name:string)=>string}
+ */
+function _tvrbStockTopicsOfDate(date) {
+  return function(name) {
+    const raw = _tvrbStockTopicsText(name);
+    if (!raw) return raw;
+    return _ebbTopicOnDate(date, raw);
+  };
+}
+
+/**
+ * ★★ [EBB-TOPIC-TEMP 2026-11-27 用户口径] 展示日【当日生效】的临时题材词（第二十条禁买集合的一半）。
+ *
+ * 用户原话：「你还要看总龙有没有临时题材刚好在这个时间节点建立，如果有那么这个临时题材和票也受到牵连，
+ *   是不能选的……要牵连到大类的，也就是核心词农业包含的同义词都灰掉，不单是题材灰，包含的股票也是要灰的」。
+ * ⇒ 取词走 `getTempCoreWindowsForDate`（ui-bridge 注册的 resolver，与分组层 / 标签层同一个来源，§6）：
+ *   只出【窗口内生效】的临时词 —— 11-16 有「东方」（11-12 设置、3 个交易日），
+ *   11-18 才建的「羊字辈」在 11-16 不会出现。
+ * ⛔ 本函数只回答「当天有哪些临时词」，要不要牵连由规则层 `ebbBanTopicsOf` 判（总龙题材串沾不沾）。
+ *
+ * @param {string} date 展示的交易日
+ * @returns {string[]} 临时词 + 同义词（去重）
+ */
+function _tempTopicTokensOf(date) {
+  const out = [];
+  const push = function(t) {
+    const v = String(t === null || t === undefined ? '' : t).trim();
+    if (v && out.indexOf(v) < 0) out.push(v);
+  };
+  getTempCoreWindowsForDate(date).forEach(function(w) {
+    push(w && w.name);
+    (Array.isArray(w && w.synonyms) ? w.synonyms : []).forEach(push);
+  });
+  return out;
+}
+
 function _tvrbStockTopicsText(name) {
   const nm = String(name || '').trim();
   if (!nm) return '';
@@ -478,21 +561,25 @@ export function useTopicVolRatioBoard() {
   const prevAuctionLeg10 = ref(null);
   const prevAuctionLeg10Date = ref('');
   /**
-   * ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸】「异动后的第三天 ⇒ 同题材禁入」的两份输入：
-   *   `abnPrev2`      = 【前两个交易日】的 9:26 竞价口径十日涨幅（`readAuctionLegRangeMap(pd2)`，
-   *                     与买点侧今日选股同一个函数，§6）—— 用来找出「异动日那一天的触发源」；
-   *   `abnPrev2Notes` = 【前两个交易日】竞价名单每行的 note（`auction_watchlist`，一次 REST）——
+   * ★★ [ABN-TB 2026-11-17 用户口径 / ABN-TB-MKTDRAGON 2026-11-26 修订]
+   *   第三十四条【延伸】「异动后的第三天 ⇒ 同题材禁入」的两份输入：
+   *   `abnPrev2Leader` = 【前两个交易日】的**市龙一**（9:26 竞价口径 30 日涨幅第 1 名·主板，
+   *                     `buildTvrbAuctionBoard30` 同一把尺子，§6）—— 它是本延伸分支的【唯一】触发源；
+   *   `abnPrev2Notes`  = 【前两个交易日】竞价名单每行的 note（`auction_watchlist`，一次 REST）——
    *                     用来取出触发源当天的【细分题材串】，例：11-12 东方海洋 =
    *                     `10.02%(水产品,农业,东方,羊字辈)` ⇒ 这就是用户点名的「它题材的股票」。
    *   ⚠️ 为什么是「前两个交易日」而不是「上一个」：用户口径「次日本来现在的规则不能买，不变，
    *     在第三天都不能买它题材的股票」—— 次日由第三十四条原口径（全场空仓）负责，
    *     本条只在 D+2（= 前两个交易日那次异动）生效，D+3 起自动不生效（「第四天按正常流程走」）。
+   *   ⚠️ 为什么触发源必须是市龙一：11-24 北纬科技 10日偏离 +100.11% 越线，但它不是市龙一
+   *     （市龙一 = 冰山冷热，未越线）⇒ 用户口径「这只是个股异动行为，不能影响题材」。
+   *     ⛔ 旧实现取「D-2 十日涨幅最高票」= 把个股异动误升格，2026-11-26 已废除。
    *   ⚠️ 日期核对红线（与上面两份 rangeMap 同一条）：只认【日期对得上】的那份（§10 不拿旧日期顶替）。
-   *   ⚠️ 纯只读：合计 3 次 REST（竞价口径 2 次 + 名单 1 次），全部会话缓存 + 单飞（§32），
+   *   ⚠️ 纯只读：30 日榜两份读取器 + 名单 1 次，全部会话缓存 + 单飞（§32），
    *     不消耗猫抓额度、不发任何上游请求。
    */
-  const abnPrev2 = ref(null);
-  const abnPrev2Date = ref('');
+  const abnPrev2Leader = ref(null);
+  const abnPrev2LeaderDate = ref('');
   const abnPrev2Notes = ref(null);
   const abnPrev2NoteDate = ref('');
   /**
@@ -637,6 +724,12 @@ export function useTopicVolRatioBoard() {
     const p = readLeaderRankInputsForDates(dates).then(function(inputs) {
       if (currentDate.value !== d) return;                 // 竞态保护：期间切了日期 ⇒ 丢弃
       // 题材库：股票名 → 题材串。库还没建好 ⇒ 现建一次（⛔ 不因此静默退化成「没有题材」）。
+      // ★★ [TEMP-CORE-SCOPE 2026-11-27 用户口径] 但这个并集缓存【没有日期维度】
+      //   （stock_topics 一票一行、跨日期共享；scanDataSourceForTopics 还会并进近 66 天全部 note）
+      //   ⇒ 11-18 才建的临时词「羊字辈」会回灌到 11-04 的榜里，被当成老题材写进 11-12 的选择理由。
+      //   修法：取词后先按【展示日】的临时题材隔离表过滤（不生效的临时词一律不算数），
+      //   ⛔ 不改库、不改 note（与 getTopicGroups / getTopicsDisplay 同一口径）。
+      const __hiddenToks = getHiddenTopicTokensForDate(d);
       let cacheTried = false;
       const topicOf = function(name) {
         let set = lookupTopicsByName(name);
@@ -645,7 +738,8 @@ export function useTopicVolRatioBoard() {
           try { buildTopicCache(); } catch (e) { /* 题材库不可用 ⇒ 按判不出处理 */ }
           set = lookupTopicsByName(name);
         }
-        return (set && set.size > 0) ? Array.from(set).join(',') : '';
+        const raw = (set && set.size > 0) ? Array.from(set).join(',') : '';
+        return (raw && __hiddenToks.size > 0) ? filterHiddenTopicText(raw, __hiddenToks) : raw;
       };
       const res = detectLeaderFirstTopic(inputs, nm, {
         topicOf: topicOf,
@@ -685,28 +779,76 @@ export function useTopicVolRatioBoard() {
    *   说明区会写出原因（⛔ 绝不把「没数据」当成「0 次在列」更不当成「今天空仓」）。
    */
   const range10Presence = ref(null);
+  /**
+   * ★★ [CASE-1123-HAILI 2026-11-26 用户报障] `range10PresenceDate` = **真数据就绪**的日期，
+   *   ⛔ 不再表示「已经问过一次」。旧实现无论成功失败都置它 ⇒ 买点侧定稿门控第⑦项误判就绪 ⇒
+   *   09:27 放行定稿（当时 `auction_presence` 当天行还没产出 ⇒ 第二十九条判不出），
+   *   09:30/15:05 cron 写入后只要重算一次，结论就翻脸 —— 用户原话：
+   *   「我之前当天都没见这个买点侧有这只股票啊，现在怎么又冒出来了」。
+   *   ⇒ 现在只有 `rec && coveredDays > 0` 才置位；空结果只记 `range10PresenceTried`（供重试用）。
+   */
   const range10PresenceDate = ref('');
-  function ensureRange10Presence(d) {
+  /** 已经问过一次的日期（防止并发重复请求；空结果 + 早盘窗口内会定时重试） */
+  const range10PresenceTried = ref('');
+  let _presenceTimer = null;
+  let _presenceTryLeft = 0;
+  function _stopPresenceWait() {
+    if (_presenceTimer) { clearTimeout(_presenceTimer); _presenceTimer = null; }
+  }
+  /** §10 放行判据：历史日（表里本来就没有未来数据）/ 今天已过 09:35 ⇒ 不再等，如实按「判不出」放行 */
+  function _presenceGaveUp(d) {
+    if (!d) return true;
+    if (String(d) !== _bjToday()) return true;
+    return beijingNowHHMM() >= '09:35';
+  }
+  function ensureRange10Presence(d, _retry) {
     if (!d) return;
     const hit = getPresenceForDate(d, PRESENCE_WINDOW_10);
-    if (hit) {
-      if (range10PresenceDate.value !== d) {
-        range10Presence.value = hit;
-        range10PresenceDate.value = d;
-      }
+    if (hit && Number(hit.coveredDays) > 0) {
+      _stopPresenceWait();
+      range10Presence.value = hit;
+      range10PresenceDate.value = d;
+      range10PresenceTried.value = d;
       return;
     }
-    if (range10PresenceDate.value === d) return;   // 这一天要过了（成功或失败都已定论）
+    if (range10PresenceTried.value === d && !_retry) return;   // 同一天已经问过（重试时放行）
     ensurePresence(d, PRESENCE_WINDOW_10).then(function(rec) {
       if (currentDate.value !== d) return;         // 竞态保护：期间切了日期 ⇒ 丢弃
-      range10Presence.value = rec || null;
-      range10PresenceDate.value = d;
+      range10PresenceTried.value = d;
+      if (rec && Number(rec.coveredDays) > 0) {
+        _stopPresenceWait();
+        range10Presence.value = rec;
+        range10PresenceDate.value = d;
+        return;
+      }
+      // ★ 空结果 = 这一天还没算（cron 未跑 / 名单未落库）⇒ ⛔ 不许置就绪
+      range10Presence.value = null;
+      // 早盘窗口（09:25~09:35）内到点重试：`auction_presence-open` 是 09:26 的 pg_cron，
+      // 名单 09:25:28 落库 ⇒ 正常情况几秒内就有；这里只兜「慢一点 / cron 晚了」。
+      if (!_presenceGaveUp(d) && _presenceTryLeft > 0) {
+        _presenceTryLeft -= 1;
+        if (!_presenceTimer) {
+          _presenceTimer = setTimeout(function() {
+            _presenceTimer = null;
+            ensureRange10Presence(d, true);
+          }, 20000);
+        }
+      }
     }).catch(function(e) {
       if (currentDate.value !== d) return;
       console.warn('[TVRB] 在列次数（auction_presence · 10日窗口）读取失败，十日涨幅候补本次不生效:',
         e && e.message);
-      range10Presence.value = null;
-      range10PresenceDate.value = d;
+      range10PresenceTried.value = d;
+      range10Presence.value = null;                // ⛔ 不置就绪（同空结果）
+      if (!_presenceGaveUp(d) && _presenceTryLeft > 0) {
+        _presenceTryLeft -= 1;
+        if (!_presenceTimer) {
+          _presenceTimer = setTimeout(function() {
+            _presenceTimer = null;
+            ensureRange10Presence(d, true);
+          }, 20000);
+        }
+      }
     });
   }
   // ★ [DIVERGE 2026-10-20] 市场总龙一【首次分歧】判定（异步算出后经 data computed 重算生效）。
@@ -933,7 +1075,15 @@ export function useTopicVolRatioBoard() {
 
   function _armDivergeWatchdog(d) {
     if (!d) return;
-    _clearDivergeWatchdog(d);
+    // ★★ [DIVERGE-WATCHDOG-STICKY 2026-11-20 事故] **同一日的保险丝只上第一次，⛔ 不许被后续调用反复重置。**
+    //   🔴 事故：`ensureLeaderDivergence` 被 watch / 退避重试反复调用（每次 5s / 15s / 40s / 80s），
+    //      每进一次就 `clearTimeout + 重设 20s` ⇒ 截止时间被一路往后推（实测可推到 140s+，
+    //      只要期间还有任何数据到货触发重算就继续推）⇒ 注释里承诺的「20s 硬上限」形同虚设，
+    //      用户看到的就是「一直停留在『总龙分歧判定计算中』」。
+    //   ✅ 现在：该日已有保险丝 ⇒ 直接返回，**截止时间永远是第一次的那一个**。
+    //   ⚠️ 触发时先 `delete` 再判日期（见下）⇒ 若那一帧 `currentDate` 还没落到 d，本次不落终态，
+    //      但记录已清 ⇒ 下一次调用会重新上保险丝（⛔ 不会因此永久挂死）。
+    if (_divergeWatchdog.has(d)) return;
     const timer = setTimeout(function() {
       _divergeWatchdog.delete(d);
       // ⚠️ 两道守卫与退避重试的终态完全同款：过期日期不许覆盖当前日的结论（DIVERGE-RACE）
@@ -1065,6 +1215,46 @@ export function useTopicVolRatioBoard() {
     const leaderName = String((base.leader && base.leader.name) || '').trim();
     if (!leaderName || leaderName !== String(row.stock || '').trim()) return base;
     return Object.assign({}, base, { leaderDiverge: row });
+  }
+
+  /**
+   * ★★ [RULE-35-DIAG 2026-11-19 用户报障] 把 30 日榜的【诊断串】挂进 `ebbCtx`。
+   *   只读透传、⛔ 不改任何事实：plan 层只在「top30 为空 ⇒ 判不出」那条说明里拼一句，
+   *   有票时一个字都不显示（↑ 上面 `_r30Diag` 在有票时返回空串，这里也就不会覆盖）。
+   */
+  function _ebbCtxWithTop30Diag(ctx, diag) {
+    const base = ctx || null;
+    if (!base) return null;
+    const s = String(diag || '').trim();
+    return s ? Object.assign({}, base, { top30Diag: s }) : base;
+  }
+
+  /**
+   * ★★ [MARKET-DRAGON-ONLY 2026-11-25 用户口径，逐字] 把「市龙一」注入 `ebbCtx`（唯一注入点，§6）。
+   *
+   *   「首先你要明白我说的市龙一就是 30 日涨幅 toggle 涨幅排名第一的那只股票（主板），
+   *     如果它触发异动（非逼近红线），才会有原来那个红色提示空仓大板……」
+   *
+   * 来源 = `getTvrbAuctionBoard30(d).rank[0].stock`（= 本看板 `_r30Top`，与「市龙一~五」标签同一份
+   * 竞价口径 30 日榜、同一套「只主板 + 腿数达标 + 降序」判据，§6 不另起一份名次）。
+   *
+   * ⚠️ 为什么必须显式注入、而不是让规则层自己去读：§4 规则层不取数；§10 判不出时规则层必须看到
+   *   **空名**（→ `unknownLeader`），⛔ 绝不能让它自己「随便挑一只」冒充市龙一。
+   * ⚠️ 引用不变原则（§19）：值没变就返回原对象，下游 computed 不白重算。
+   *
+   * @param {object|null} ctx collectDecisionTopics 出口的 ebbCtx
+   * @param {Array<{stock:string}>|null} r30Top 竞价口径 30 日榜全量降序（null = 判不出，§10）
+   * @returns {object|null}
+   */
+  function _ebbCtxWithMktDragon(ctx, r30Top) {
+    const base = ctx || null;
+    if (!base) return null;
+    const name = (Array.isArray(r30Top) && r30Top.length > 0 && r30Top[0])
+      ? String(r30Top[0].stock || '').trim()
+      : '';
+    // §10：判不出就写空串（覆盖掉可能残留的旧值），⛔ 不留 undefined 让规则层去猜
+    if (base.mktDragon1 === name) return base;
+    return Object.assign({}, base, { mktDragon1: name });
   }
 
   /**
@@ -1370,6 +1560,16 @@ export function useTopicVolRatioBoard() {
         console.warn('[TVRB] 9:25 竞价口径 20 日榜计算失败（本日 20 日涨幅通道将如实标注）:', e && e.message);
       });
     }
+    // ★★ [RULE-35 2026-11-18 用户口径] 第三十五条【30日涨幅抱团】的候选池。
+    //   恒 9:26 **竞价口径**（用户原话「记住是竞价口径」）+ 固定当日 9:25 名单 + 只主板 + 腿数 ≥ 10。
+    //   与上面的 20 日榜【同一套路、同一份指标行】⇒ §32 0 新增网络请求。
+    //   §10：失败 / 判不出 ⇒ 模块内记 ready=false ⇒ 规则层【不接管】并如实标注「判不出」，
+    //        ⛔ 绝不回落成「今天没有 30 日龙头」这种假结论。
+    if (d) {
+      ensureTvrbAuctionBoard30(d).catch(function(e) {
+        console.warn('[TVRB] 9:26 竞价口径 30 日榜计算失败（第三十五条今日将如实标注判不出）:', e && e.message);
+      });
+    }
     // ①-d ★ [EBB-R20 2026-10-20] 20日涨幅前五（总龙一~五）仍要跑：
     //   「20日涨幅」toggle / 决策看板 / 补位区块共用它，⛔ 不能因为题材量比换了数据源就停掉。
     //   但本看板的规则输入已改读上面的竞价口径榜，⛔ 不再消费它的发布结果（仅在判不出时回落）。
@@ -1405,7 +1605,7 @@ export function useTopicVolRatioBoard() {
       // ★★ [ABNORMAL-10D 2026-11-13] 没有上一交易日 ⇒ 「异动次日」判不出（判据缺一天，§10 不猜）
       prevAuctionLeg10.value = null; prevAuctionLeg10Date.value = '';
       // ★★ [ABN-TB 2026-11-17] 没有上一交易日 ⇒ 更没有「前两个交易日」⇒ 第三天同题材监控判不出
-      abnPrev2.value = null; abnPrev2Date.value = '';
+      abnPrev2Leader.value = null; abnPrev2LeaderDate.value = '';
       abnPrev2Notes.value = null; abnPrev2NoteDate.value = '';
       // ★ [BUY-SETTLE] 没有上一交易日 ⇒ 与「昨日」相关的两项不参与门控（见门控调用处传的 prevDate）
       prevRangeTriedDate.value = '';
@@ -1460,20 +1660,30 @@ export function useTopicVolRatioBoard() {
     //     找更早的日子会让禁令无限延长（那是与用户口径相反的方向）。
     const pd2 = getPreviousTradingDay(pd) || '';
     if (!pd2) {
-      abnPrev2.value = null; abnPrev2Date.value = '';
+      abnPrev2Leader.value = null; abnPrev2LeaderDate.value = '';
       abnPrev2Notes.value = null; abnPrev2NoteDate.value = '';
     } else {
-      // ① D-2 的 9:26 竞价口径十日涨幅（判「那一天有没有异动、异动的是哪只票」）
-      if (abnPrev2Date.value !== pd2) {
-        readAuctionLegRangeMap(pd2).then(function(m) {
+      // ① D-2 的【市龙一】= 9:26 竞价口径 30 日涨幅榜第 1 名·主板
+      //   ★★ [ABN-TB-MKTDRAGON 2026-11-26] 旧实现读的是「D-2 十日涨幅 Map 再挑最高票」，
+      //     与正文 11-25 已收窄的「只认市龙一」不一致 ⇒ 11-24 北纬科技（非市龙一）被误当触发源。
+      //     现在直接复用 `buildTvrbAuctionBoard30`（与第三十五条 / 市龙一~五标签同一份判据，§6）。
+      if (abnPrev2LeaderDate.value !== pd2) {
+        Promise.all([
+          readAuctionLegRange30Pct(pd2).catch(function() { return null; }),
+          readMarketMetricsForDate(pd2, 'auction').catch(function() { return null; })
+        ]).then(function(pair) {
           if (getPreviousTradingDay(getPreviousTradingDay(currentDate.value)) !== pd2) return;  // 竞态：期间切了日期 ⇒ 丢弃
-          abnPrev2.value = (m && m.size > 0) ? m : null;
-          abnPrev2Date.value = pd2;
+          const board = buildTvrbAuctionBoard30(pair[0], pair[1]);
+          const top = (board && board.ready && Array.isArray(board.rank) && board.rank.length > 0)
+            ? board.rank[0] : null;
+          const nm = top ? String(top.stock || '').trim() : '';
+          abnPrev2Leader.value = nm ? { name: nm, pct: top.pct } : null;
+          abnPrev2LeaderDate.value = pd2;
         }).catch(function(e) {
           if (getPreviousTradingDay(getPreviousTradingDay(currentDate.value)) !== pd2) return;
-          console.warn('[TVRB] 前两个交易日 9:26 竞价口径十日涨幅读取失败，异动第三天监控判不出:', e && e.message);
-          abnPrev2.value = null;
-          abnPrev2Date.value = pd2;
+          console.warn('[TVRB] 前两个交易日 9:26 竞价口径 30 日榜读取失败，异动第三天监控判不出:', e && e.message);
+          abnPrev2Leader.value = null;
+          abnPrev2LeaderDate.value = pd2;
         });
       }
       // ② D-2 竞价名单每行的 note（取那只票当天的【细分题材串】——
@@ -1532,7 +1742,7 @@ export function useTopicVolRatioBoard() {
               date: histDates[i],
               prevDate: histDates[i + 1] || '',
               leaderStock: r.leaderStock,
-              leaderTopic: r.leaderTopic,
+              leaderTopic: _ebbTopicOnDate(histDates[i], r.leaderTopic),
               ebb: r.ebb
             });
           }
@@ -1593,6 +1803,24 @@ export function useTopicVolRatioBoard() {
    */
   const prevBuyPlanNames = ref({ date: '', names: null, status: 'idle' });
 
+  /**
+   * ★★ [NEXT-DAY-BUY 2026-11-27 用户口径 · 规则手册八修] 第二十八条【次日承接】名单。
+   *
+   * 用户原话：「还有就是次日要继承下第二十八条次日买的票……只继承一天啊，不要无限继承，
+   *   不要乱继承」，并明确「灰色行的股票不要继承」。
+   *
+   * 形状 = `{ date, names: string[]|null, note }`：
+   *   · `names === null` ⇒ **未知**（读不到 / 表不存在 / 存档损坏 / 那天没定稿）⇒ 今天不渲染承接块，
+   *     并在说明区如实标注（§10：⛔ 绝不把「读不到」折成「昨天没有次日买」）；
+   *   · `names === []`   ⇒ 那天**确实没有**次日买（新龙全被灰掉了 / 那天不是切换日）。
+   *
+   * 为什么复用 `_loadPrevBuyPlanNames`：它已经在读【上一交易日】的 `tvrb_plan_snapshot` 并解码，
+   *   这里只是从**同一份解码结果**里多取一个字段 ⇒ 零额外请求（§32）。
+   *
+   * ⛔ 只继承一天：来源恒为上一交易日，⛔ 不再往更早翻（用户「不要无限继承」）。
+   */
+  const prevNextDayBuy = ref({ date: '', names: null, note: '', status: '' });
+
   // ★★ [RULES-BUMP-ALL 2026-11-14 用户口径] 这里原有一个 `_bjTodayKey()`（北京「今天」日期串），
   //   唯一用途是给 `allowRulesInvalidation` 传「今天 true / 历史日 false」，让规则升级只重算今天。
   //   用户本轮明确推翻（原话「这个和规则没有关吧？你重算一遍」）⇒ 该选项与它一起删除，
@@ -1621,15 +1849,24 @@ export function useTopicVolRatioBoard() {
     const prev = key ? getPreviousTradingDay(key) : '';
     if (!prev) {
       prevBuyPlanNames.value = { date: '', names: null, status: 'no-prev-day' };
+      prevNextDayBuy.value = { date: '', names: null, note: '' };
       return;
     }
     prevBuyPlanNames.value = { date: prev, names: null, status: 'loading' };
+    // ★★ [NEXT-DAY-BUY] 同一次异步读档里一起清空（⛔ 不许留着上一天的名字当今天的承接名单）
+    //   `status` 三态：'' 未开始 / 'loading' 读档中 / 'hit' 读到了（含「确实没有」= names: []）/ 'error' 读失败。
+    //   ⚠️ [NEXT-DAY-BUY-3 2026-11-28] `_persistPlanSnapshot` 靠 'loading' 拦住「跨日输入还没到就冻结结论」。
+    prevNextDayBuy.value = { date: prev, names: null, note: '', status: 'loading' };
     readPlanSnapshot(prev).then(function(res) {
       if (_disposed) return;
       if (String(currentDate.value || '').trim() !== key) return;   // 竞态：用户已经切走
       const r = res || { status: 'error', reason: 'empty-result' };
       if (r.status !== 'hit') {
         prevBuyPlanNames.value = { date: prev, names: null, status: r.status || 'error' };
+        // ★ 读不到 ⇒ 承接名单 names 保持 null（未知）⇒ 今天不渲染承接块（§10 不瞎猜）
+        //   ⚠️ status 必须离开 'loading'，否则 `_persistPlanSnapshot` 会一直被拦住（永远不定稿）。
+        prevNextDayBuy.value = { date: prev, names: null, note: '', status: 'error' };
+        // ★ 读不到 ⇒ 承接名单 names 保持 null（未知）⇒ 今天不渲染承接块（§10 不瞎猜）
         _dbgLog('[TVRB-SELL-AUTO] 昨日 ' + prev + ' 的定稿存档不可用（' + (r.status || 'error') +
           '）⇒ 今日卖点侧只用「昨日买入/持有」标签，可能缺票（不会瞎猜）');
         return;
@@ -1637,21 +1874,50 @@ export function useTopicVolRatioBoard() {
       const dec = decodePlanSnapshot(r.row && r.row.plan);
       if (!dec.ok) {
         prevBuyPlanNames.value = { date: prev, names: null, status: 'corrupt' };
+        prevNextDayBuy.value = { date: prev, names: null, note: '', status: 'error' };
         _dbgLog('[TVRB-SELL-AUTO] 昨日 ' + prev + ' 存档解码失败（' + dec.reason +
           '）⇒ 今日卖点侧只用标签');
         return;
       }
       const names = collectBuyNames(dec.plan);
       prevBuyPlanNames.value = { date: prev, names: names, status: 'hit' };
+      // ★★ [NEXT-DAY-BUY 2026-11-27] 第二十八条【次日承接】：同一份解码结果里取 `newDragon.nextDayBuy`。
+      //   · 取到 ⇒ 今天渲染承接块（名单在【昨天收口时】已经剔掉了灰行）；
+      //   · 取不到 ⇒ `[]`（那天确实没有次日买，是新龙被灰掉了 / 不是切换日），⛔ 不是「读不到」。
+      const ndb = collectNextDayBuy(dec.plan);
+      prevNextDayBuy.value = {
+        date: prev,
+        names: ndb ? ndb.names : [],
+        note: ndb ? ndb.note : '',
+        status: 'hit'
+      };
       _dbgLog('[TVRB-SELL-AUTO] 昨日 ' + prev + ' 买点侧 ' + names.length + ' 只 ⇒ 今日卖点侧自动继承：' +
-        (names.slice(0, 12).join('、') || '(空)') + (names.length > 12 ? ' …' : ''));
+        (names.slice(0, 12).join('、') || '(空)') + (names.length > 12 ? ' …' : '') +
+        '｜第二十八条次日承接：' + (ndb ? ndb.names.join('、') : '(无)'));
     }).catch(function(e) {
       if (_disposed) return;
       if (String(currentDate.value || '').trim() !== key) return;
       prevBuyPlanNames.value = { date: prev, names: null, status: 'error' };
+      prevNextDayBuy.value = { date: prev, names: null, note: '', status: 'error' };
       _dbgLog('[TVRB-SELL-AUTO] 读昨日买点侧异常：' + String((e && e.message) || e));
     });
   }
+
+  /**
+   * ★★ [NEXT-DAY-BUY 2026-11-27] 注入规则层的【次日承接】输入（`o.prevNextDayBuy`）。
+   *
+   * 三道闸（缺一 ⇒ null = 「今天没有承接」，⛔ 绝不拿 A 日顶 B 日）：
+   *   ① 必须已经读完（loading / 未读 ⇒ names 不是数组 ⇒ null）；
+   *   ② `date` 必须【正好是】当前日期的上一交易日（切日期那一帧名字还是旧日期的）；
+   *   ③ 名单非空（空数组 = 那天确实没有次日买 ⇒ 不建块，§11 零渲染）。
+   */
+  const prevNextDayBuyForDay = computed(function() {
+    const d = String(currentDate.value || '').trim();
+    const v = prevNextDayBuy.value;
+    if (!d || !v || !v.date || !Array.isArray(v.names) || v.names.length === 0) return null;
+    if (v.date !== (getPreviousTradingDay(d) || '')) return null;
+    return v;
+  });
 
   /** 第⑭项门控输入：这一天的存档【读完了没有】。只有 loading 拦，其余状态都算读过（§10）。 */
   const planSnapshotReady = computed(function() {
@@ -1722,8 +1988,39 @@ export function useTopicVolRatioBoard() {
       '⛔ 绝不拿重算结果去覆盖（§10 / §11）。'];
   });
 
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  // ★★ [DEV-RULE 2026-11-25] 官方偏离值取数器 —— **必须声明在 `data` 之前**：
+  //   本轮起偏离值事实是【规则输入】（第三十四条全场异动 / 三十六条逼近不买 / 三十六·b 异动卖），
+  //   而 `data` 里的 `buildTopicVolRatioPlan` 要读 `_dev.devFacts`。声明在 `data` 之后会踩 TDZ
+  //   （`data` 是 computed，若在任何一行把它求值在声明之前 ⇒ ReferenceError），故提前到这里。
+  //   ⚠️ 面板/徽标那套（`devMap` / `rowsFor` / `meta`）仍在下方用到，只是取数器本体挪上来了。
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  const _dev = useAbnormalDeviation();
+
+  /**
+   * ★★ [DEV-RULE 2026-11-25] 官方偏离值事实「落地了没有」—— 买点侧定稿门控第⑰项的判据。
+   *
+   * 三态（§10：判据必须可判定，⛔ 不靠「等够几秒」猜）：
+   *   · 日期对不上（还没为这一天读完）⇒ false（等）；
+   *   · 算出了结果（`ready>0`）⇒ true；
+   *   · 没结果但**不再重试**（`pending=false`：已过 09:30 / 已收盘 / 历史日 / 一只票都不用算）
+   *     ⇒ true（放行并如实降级，说明区会写「N 只算不出、没有施加限制」）。
+   * ⛔ 不读 `deviationUniverse`（它依赖主计划 ⇒ 会构成 computed 环）；「没有票要算」这一支
+   *    已在 `useAbnormalDeviation#load([])` 里落成空事实（asOf 正确、pending=false）。
+   */
+  function _devFactsGate(d) {
+    if (!d) return true;
+    const f = _dev.devFacts.value || {};
+    if (String(f.asOf || '') !== String(d)) return false;
+    if (Number(f.ready) > 0) return true;
+    return f.pending !== true;
+  }
+
   const data = computed(function() {
     void version.value;                 // 显式声明对刷新信号的依赖
+    // ★★ [DEV-RULE 2026-11-25] 官方偏离值事实（异步算好）⇒ 读到之后主计划必须重算一次，
+    //   否则「逼近红线不买 / 异动卖 / 全场异动」三条永远吃不到事实（会一直按「判不出」放行）。
+    void _dev.devFacts.value;
     // ★★ [TVRB-PLAN-SNAPSHOT] 存档状态是 resolveBuySettle 第⑭项输入 ⇒ 读完要重算一帧再决定能否定稿
     void planSnapshot.value;
     // ★ [EBB] 昨日十日涨幅（异步读回）⇒ 读到之后重算一次，退潮首日规则才生效
@@ -1753,6 +2050,9 @@ export function useTopicVolRatioBoard() {
     // ★★ [TVRB-AUC-BOARD 2026-11-10] 恒竞价口径 20 日榜（异步算好）⇒ 到货后重算一帧：
     //   所有吃 20 日涨幅候选池的规则在这一帧统一切到「9:25 那一刻」的结论。
     void getTvrbAuctionBoardToken();
+    // ★★ [RULE-35 2026-11-18] 30日涨幅榜（9:26 竞价口径）到货 ⇒ 重算一帧，
+    //   第三十五条才会在该出票时出票（否则首帧永远拿到「还没就绪」，看起来像规则没生效）。
+    void getTvrbAuctionBoard30Token();
     // ★ [EBB-R20] 20日涨幅前五（总龙一~五）：响应式指纹令牌 —— ensureRange20Leaders 发布后自动重算
     void getRange20LeadersFingerprintToken();
     // ★★ [CORE-CAT 2026-10-22] 核心词表（大类）变更信号：云端加载完成 / 用户改完核心词 ⇒ 本帧重算，
@@ -1821,6 +2121,35 @@ export function useTopicVolRatioBoard() {
       const _r20Top = _aucReady ? _aucBoard.top5 : (getRange20Leaders(d) || null);
       const _r20Wide = _aucReady ? _aucBoard.wide : (getRange20LeadersWide(d) || null);
       const _r20Top10 = _aucReady ? _aucBoard.top10 : (getRange20LeadersTop10(d) || null);
+      // ★★ [RULE-35 2026-11-18 用户口径] 第三十五条【30日涨幅抱团】的候选池 =
+      //   30日涨幅 **9:26 竞价口径** 榜（只主板 + 腿数达标 + 当日 9:25 名单内，降序）。
+      //   ⚠️ 与 20 日榜【不共用 ready 判定】：两条规则尺子不同，20 日榜判不出不该把 35 一起拖死。
+      //   §10：判不出 ⇒ null ⇒ 采集层 top30=[] ⇒ 规则层如实标注「判不出」且**不接管**
+      //        （⛔ 绝不回落收盘口径冒充，那等于拿错尺子下结论）。
+      const _board30 = getTvrbAuctionBoard30(d);
+      const _r30Ready = !!(_board30 && _board30.ready && Array.isArray(_board30.rank) && _board30.rank.length > 0);
+      const _r30Top = _r30Ready ? _board30.rank : null;
+      // ★★ [RULE-35-DIAG 2026-11-19 用户报障] 判不出时把【为什么】带进说明区。
+      //   上一版只说「还没就绪」，而「还没算完」和「算完但 0 只入榜」在屏幕上长得一模一样
+      //   ⇒ 用户连刷好几次也不知道卡在哪，这边也只能靠猜（§10：失败必须可分辨）。
+      //   这里只产一句诊断串，⛔ 不参与任何判定：只在 `top30` 为空时才会被拼进 notes。
+      const _r30Diag = (function() {
+        if (!_board30) {
+          return hasTvrbAuctionBoard30Verdict(d)
+            ? '榜对象为空（已发布过这一天但没有 board）'
+            : '还没算完（ensure 尚未发布这一天）';
+        }
+        if (!_board30.ready) {
+          return 'ready=false · reason=' + (_board30.reason || '(空)') +
+            ' · 9:25名单=' + (_board30.listed || 0) +
+            ' · 有涨幅=' + (_board30.covered || 0) +
+            ' · 无竞价涨幅=' + (_board30.excludedNoAuc || 0) +
+            ' · 无代码=' + (_board30.excludedNoCode || 0) +
+            ' · 入榜=' + (_board30.rowCount || 0);
+        }
+        if (!Array.isArray(_board30.rank) || _board30.rank.length === 0) return 'ready=true 但 rank 为空';
+        return '';
+      })();
 
       // ★★ [ABN-DEV 2026-11-14 用户口径] 「我看一遍股票或者市场前十，就知道怎么参考了」
       //   ⇒ 把 20 日涨幅主板前十的名字记下来，作为偏离值面板的【参考顺序】。
@@ -1868,6 +2197,9 @@ export function useTopicVolRatioBoard() {
         // ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 20日涨幅【前十】—— 退潮判定
         //   「主线题材 ≥3 只同题材」计数（classifyMainTopic）。⛔ 不上屏。
         range20Top10: _r20Top10,
+        // ★★ [RULE-35 2026-11-18 用户口径] 30日涨幅（9:26 竞价口径 · 只主板）全量降序 ——
+        //   第三十五条【30日涨幅抱团】的唯一候选池。null = 判不出（§10，规则层不接管）。
+        range30Top: _r30Top,
         // ★★ [SELL-AUTO 2026-11-12 用户口径] 昨日【买点侧】的股票名 ⇒ 今日卖点侧自动继承，
         //   用户不用再逐只补打「买入」标签（他早上本来就是照买点侧买的）。
         //   ⚠️ 日期核对红线（与上面两份 rangeMap 同款）：不是这一天的 ⇒ 传 null（§10 不拿旧日期顶替）。
@@ -1957,37 +2289,54 @@ export function useTopicVolRatioBoard() {
         range20GaveUp: !!netHardStalled.value
       });
 
-      // ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸】「异动后的第三天 ⇒ 同题材禁入」。
+      // ★★ [ABN-TB 2026-11-17 用户口径 / ABN-TB-MKTDRAGON 2026-11-26 修订]
+      //   第三十四条【延伸】「异动后的第三天 ⇒ 同题材禁入」。
       //
       //   用户原话：「记住总龙一第一次监管异动，之后两天，次日本来现在的规则不能买，不变，
       //     在第三天都不能买它题材的股票……也就是重点监控第三天，第四天按照正常流程走。」
+      //   ★★ 2026-11-26 补正（用户当场纠正）：触发源只能是【市龙一】——
+      //     「11 月 24 日北纬科技不是市龙一（30 日涨幅最高的那只），它只是个股市异动行为，
+      //       不能按市龙一的标准判监管异动，更不能影响题材。当时市龙一是冰山冷热，它是正常的。」
+      //     ⇒ 与正文（2026-11-25 MARKET-DRAGON-ONLY）完全对齐：非市龙一越线 = 个股异动，
+      //       只走第三十六条灰那一只，⛔ 不空仓、⛔ 不影响题材、⛔ 不产生「第三天」。
       //
       //   ★ 判据（全部只读、无副作用）：
       //     ① 目标日 = 【前两个交易日】= D-2（次日 D-1 由第三十四条原口径「全场空仓」负责）；
-      //     ② D-2 的 9:26 竞价口径里，主板票十日涨幅最高那只 ＞ 97% ⇒ D-2 就是异动日，它就是触发源；
+      //     ② D-2 的【市龙一】（9:26 竞价口径 30 日涨幅第 1 名·主板）**它自己的官方偏离值
+      //        （D-2 收盘口径）已越「严重异常波动」红线** ⇒ D-2 就是异动日，它就是触发源；
+      //        ⛔ 不再取「十日涨幅最高的那只」（旧口径，会把北纬科技这类个股异动误升格）；
       //     ③ 禁令集合 = 它 D-2 当天的细分题材（竞价名单 note）+ 它在题材库里的题材；
       //     ④ 今天（D）= 异动日 + 2 个交易日 ⇒ 禁令生效（`dayOffset = 2`，常量在 tvrb-constants）。
-      //   §10：D-2 那两份没读到 / 最高票没超线 ⇒ 返回当前 NONE / 缺项版（提示板会如实写「判不出」），
-      //     ⛔ 绝不把「没读到」当成「D-2 没异动」静默放行 —— 所以这里返回的是 `unknown` 版而不是 null。
+      //   §10：D-2 市龙一没读到 / 它的偏离值判不出 / 没越线 ⇒ 返回 NONE（= 不生效），
+      //     ⛔ 绝不把「没读到」当成「D-2 没异动」静默放行 —— 「读到了但题材缺失」返回 `unknown`
+      //     （提示板会如实写「判不出」）。
       const _abnTbTarget = pd ? (getPreviousTradingDay(pd) || '') : '';
       const _abnTbInput = (function() {
         // 没有「前两个交易日」（月初 / 空日历）⇒ 本条不适用（⛔ 不是「判不出」，是「用不上」）
         if (!_abnTbTarget) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
         // 还没读到 ⇒ 门控（buy-settle 第十五项）正在挂住买点侧；
         //   此刻给 NONE（= 不生效）而不是「判不出」，因为「还在读」不是结论（§10 不许把等待当结论）。
-        if (abnPrev2Date.value !== _abnTbTarget) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
-        const eligible = makeAbnMainBoardFilter(isMainBoardRankEligible, getStockCode);
-        const top = maxRangePctOf(abnPrev2.value, eligible);
-        // D-2 没有异动（最高票没超 97% / 一只都排不出）⇒ 今天不是「异动第三天」⇒ 稳定 NONE（§19）
-        if (!top || !isOverRange10Cap(top.pct)) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
+        if (abnPrev2LeaderDate.value !== _abnTbTarget) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
+        const _leader = abnPrev2Leader.value;
+        const _leaderName = (_leader && _leader.name) ? String(_leader.name).trim() : '';
+        // D-2 没有市龙一（30 日榜判不出 / 榜为空）⇒ 本条不生效（说明区已由 notes 如实标注）
+        if (!_leaderName) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
+        // ★ D-2 市龙一的**官方偏离值（D-2 收盘口径）** —— 由组合式算好注入（`byDate`）。
+        //   判不出（腿缺 / 还没算回来）⇒ 不生效：买点侧另有门控（buy-settle 第⑰项）会等它落地，
+        //   ⛔ 这里不许「等不到就当成没异动」还往下走（那是静默放行）。
+        const _dvByDate = (_dev.devFacts.value && _dev.devFacts.value.byDate instanceof Map)
+          ? _dev.devFacts.value.byDate : null;
+        const _dvD2Map = _dvByDate ? (_dvByDate.get(_abnTbTarget) || null) : null;
+        const _dvD2 = (_dvD2Map instanceof Map) ? (_dvD2Map.get(_leaderName) || null) : null;
+        if (!_dvD2 || !isDeviationOverRedLine(_dvD2)) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
         // ★ 到这里才确定「今天 = 异动后的第三天」。细分题材取【D-2 当天竞价名单的 note】——
         //   题材库里 东方海洋 只有「水产品,农业」，缺「东方 / 羊字辈」（而「东方」正是临时核心词），
         //   只查库会把日出东方放行 —— 那正是本条要修的那个错。
         const noteRow = (abnPrev2NoteDate.value === _abnTbTarget && abnPrev2Notes.value)
-          ? abnPrev2Notes.value.get(top.name) : null;
+          ? abnPrev2Notes.value.get(_leaderName) : null;
         const libArr = [];
         try {
-          const set = lookupTopicsByName(top.name);
+          const set = lookupTopicsByName(_leaderName);
           if (set) set.forEach(function(t) { libArr.push(t); });
         } catch (e) { /* 题材库不可用 ⇒ 只用 note 那一份（§10 如实降级，⛔ 不猜） */ }
         // ⚠️ 两份都为空 ⇒ buildAbnormalTopicBan 返回 `unknown`（提示板写明「判不出」，§10 不静默放行）
@@ -1995,8 +2344,11 @@ export function useTopicVolRatioBoard() {
           dayOffset: 2,
           triggerDate: _abnTbTarget,
           todayDate: d,
-          leaderName: top.name,
-          leaderPct: top.pct,
+          leaderName: _leaderName,
+          leaderPct: _leader ? _leader.pct : null,
+          // ★ [DEV-RULE] 换口径后必须把偏离事实一起交进去：阈值判据在纯函数里（§6 一把尺子），
+          //   文案也要写「10日偏离 X 已越官方红线」而不是十日涨幅。
+          leaderDev: _dvD2,
           noteTopics: noteRow ? parseNoteTopics(noteRow.note) : [],
           libTopics: libArr
         });
@@ -2006,6 +2358,13 @@ export function useTopicVolRatioBoard() {
         date: d,
         // ★★ [TVRB-DATA-GATE] 数据缺失 ⇒ 规则层直接清空买点侧（见 _clearBuySideForDataGate）
         dataGateBlocked: _dataGate.blocked,
+        // ★★ [NEXT-DAY-BUY-4 2026-11-28 用户报障「加载比之前慢很多」] ⛔ 这里【不再】把上一日的
+        //   nextDayBuy 注入规则层。原因（性能红线 §17 / §26）：
+        //   它是【异步】读档结果，一旦成为 plan 的依赖 ⇒ 每次切换日期都会「先算一遍（无承接）
+        //   → 上一日存档读完 → 整张 plan 再算一遍」，等于**每次切换都全量重算两次**；
+        //   而且第二份结论还会改 `selectionSig` ⇒ 触发第二次存档判定。
+        //   ⇒ 承接块改由**展示层**单独补算（见下面 `nextDayCarry` computed），规则层不再依赖跨日输入。
+        //   ⛔ 别再加回来 —— 那条路的结果只是「多一块展示块」，却要付两次全量重算的代价。
         ctx: {
           prevDragonNames: rec.prevDragonNames,
           prevBuyNames: rec.prevBuyNames,
@@ -2023,7 +2382,9 @@ export function useTopicVolRatioBoard() {
         //   `tvrb-ebb.js#detectEbbDay` 读到 `leaderDiverge.kind==='second' && qualified!==false`
         //   ⇒ 按用户口径「二次分歧等同于首次退潮」直接判成退潮日，标题写「羊字辈二次分歧 · 等同退潮」。
         //   注入前必须过三重核对（日期 / 同名总龙 / 云端有没有这一行），见 _ebbCtxWithLeaderDiverge。
-        ebbCtx: _ebbCtxWithLeaderDiverge(rec.ebbCtx, d),
+        //   ★★ [MARKET-DRAGON-ONLY 2026-11-25] 另注入 `mktDragon1` = 市龙一（30 日涨幅第 1 名·主板），
+        //     第三十四条的【唯一】判定对象。⛔ 不是 `top5[0]`（20 日总龙一）。
+        ebbCtx: _ebbCtxWithMktDragon(_ebbCtxWithTop30Diag(_ebbCtxWithLeaderDiverge(rec.ebbCtx, d), _r30Diag), _r30Top),
         // ★★ [AUTO-PICK-TOP20 2026-11-14 用户口径] 20日涨幅榜【口径是否 = 9:25 竞价榜】——
         //   big 档（> 8 只）现在按「同题材 20日涨幅前十最靠前两只」取票，说明文字里要写清口径。
         //   ⛔ 只喂文案（规则层拼说明用），不参与任何判定：池子本身就是 rec.ebbCtx.topicPool，
@@ -2045,7 +2406,9 @@ export function useTopicVolRatioBoard() {
         pctMap: buyMap,
         // ★★ [SUSPEND-NOBUY 2026-10-14 用户口径] 买点侧「买不进名单」= 【连续停牌第 2 天及以上】的票
         //   （collectDecisionTopics 出口已用库里当日/昨日竞价行算好，见 decision-collect
-        //    #nonFirstDaySuspendNames）。规则层把它与「竞价一字」走同一条【跳过并顺延下一龙位】。
+        //    #nonFirstDaySuspendNames）。规则层对它的处理是【占一档、但不出票】（名额作废、不补位）。
+        //   ⚠️ 别与「竞价一字」混为一谈：[YIZI-NO-SHIFT 2026-11-20] 一字是【照选 + 占一档 + 出票 + 挂标签】，
+        //      ⛔ 早已不是「跳过并顺延下一龙位」；两者现在唯一的差别就是「出不出票」。
         //   ⛔ 缺省 ⇒ 规则层退回旧行为（停牌票照旧可选，§11）；停牌【首日】不在名单里（仍可入选）。
         buySkipNames: rec.buySkipSuspend || null,
         // ★ [DIVERGE 2026-10-20] 总龙首次分歧判定（null = 判不出 / 不是首次分歧日 ⇒ 规则层零行为）
@@ -2103,7 +2466,23 @@ export function useTopicVolRatioBoard() {
         //   `abnormalTopicBan` = 今天要不要执行 + 禁令题材集合（纯函数产出，见上方 _abnTbInput）；
         //   `stockTopicsOf`   = 票级认亲用的题材解析（块级命中的那一批不再逐票查，省开销）。
         abnormalTopicBan: _abnTbInput,
-        stockTopicsOf: _tvrbStockTopicsText
+        // ★★ [EBB-TOPIC-MEMBER 2026-11-27] 票级题材解析按【展示日】隔离临时题材词：
+        //   同一个入口同时喂给 ① 第二十条退潮题材字段级排除 ② 第三十四条·延伸的票级认亲。
+        stockTopicsOf: _tvrbStockTopicsOfDate(d),
+        // ★★ [EBB-TOPIC-TEMP 2026-11-27] 当日【生效】的临时题材词：第二十条的禁买集合 =
+        //   总龙原有题材 ∪（这里的词 ∩ 总龙题材串）⇒ 11-16「东方」牵连，日出东方灰化。
+        tempTopicTokens: _tempTopicTokensOf(d),
+        // ★★ [LEADER-TIMELINE 2026-11-27] 第二十八条说明上方「总龙一事件轴」的【首次分歧】事实：
+        //   直接复用本日【已经算好】的分歧判定（市龙一 + 首次分歧日），⛔ 不新增任何请求、不参与选股。
+        //   判定不是这一天的 / 判不出 ⇒ 传 null（规则层留「—」，⛔ 不拿别的票的分歧日来拼）。
+        divergeFacts: (_ldVerdict && _ldVerdict.canJudge)
+          ? { stock: (_ldTop5[0] && _ldTop5[0].name) || '', firstDate: _ldVerdict.firstDivergenceYmd || '' }
+          : null,
+        // ★★ [DEV-RULE 2026-11-25 用户口径] 官方偏离值事实（规则输入，⛔ 规则层不取数）：
+        //   auto   = 自动口径（9:25 竞价 / 收盘）在今天的 Map ⇒ 第三十六条「逼近不买」+ 三十六·b「异动卖」
+        //   byDate = 收盘口径的历史日 Map（含上一交易日）⇒ 第三十四条「异动次日」
+        //   ⚠️ 空事实（判不出）时规则层一律「不施加限制」，并由 `deviationRuleGapText` 在说明区交代。
+        devFacts: _dev.devFacts.value
       });
 
       // ★★ [TVRB-DATA-GATE 2026-11-04] 把判定结果挂进 plan（§6：一行结论只有一个出处）。
@@ -2291,6 +2670,9 @@ export function useTopicVolRatioBoard() {
         prevEbbDayDate: prevEbbDayDate.value,
         ebbHistoryDate: ebbHistoryDate.value,
         range10PresenceDate: range10PresenceDate.value,
+        // ★★ [CASE-1123-HAILI 2026-11-26] 「不再等」判据：历史日 / 今天已过 09:35 ⇒ 放行并按判不出如实标注。
+        //   历史日必须放行（表里本来就没有未来数据），否则翻历史日期会永久卡在「定稿中」。
+        range10PresenceGaveUp: _presenceGaveUp(currentDate.value),
         switchDay: !!plan.switchDay,
         top5HistDate: top5HistDate.value,
         // ★★ [BUY-SETTLE-2] / [BUY-PUBLISH 第五版] 20 日涨幅前五的结论（退潮判定的总龙一就靠它）：
@@ -2325,13 +2707,36 @@ export function useTopicVolRatioBoard() {
         // ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11 · 第十四项] 这天有没有存档，先问完再定稿。
         //   没问完就定稿 ⇒ 拿重算中间态写库 / 上屏，等存档命中又被覆盖 = 存档形同虚设。
         planSnapshotReady: planSnapshotReady.value,
-        // ★★ [ABN-TB 2026-11-17 用户口径 · 第十五项] 第三十四条【延伸】「异动第三天 ⇒ 同题材禁入」
-        //   的两份输入（D-2 竞价口径十日涨幅 + D-2 竞价名单题材串）。
+        // ★★ [RULE-35-SETTLE 2026-11-19 用户口径 · 第十六项] 9:26 竞价口径 **30 日榜**读过没有。
+        //   🔴 用户报障「11-17 / 11-18 都没生效，还是原来的票」。取证：存档 sig 已是 v22（新代码在跑），
+        //      数据层实测 `ensureTvrbAuctionBoard30('2026-11-17')` → ready=true 69 行，
+        //      但存档里 top30Huddle=null、说明写「还没就绪」⇒ 说明**首帧算完就定稿冻结了**，
+        //      2.2s 后 30 日榜到货触发的重算被 `_buyPublished` 挡住，永远上不了屏。
+        //   ⇒ 与 ⑬（20 日榜）同一个病：第三十五条吃的是另一把尺子，必须有自己的门。
+        //   §10：「读过」就算落地（成功或失败）；判不出那支由 plan.notes 如实标注且不接管。
+        top30BoardTried: _r30Ready || hasTvrbAuctionBoard30Verdict(d),
+        // ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸】「异动第三天 ⇒ 同题材禁入」
+        //   的两份输入（D-2 的【市龙一】+ D-2 竞价名单题材串）。
         //   没读到就定稿 ⇒ 到货后会有票被剔除 ⇒ 屏幕上的票「消失」，正是用户最反感的换票。
         //   ⚠️ 目标日期在这里算（规则层 / 纯函数都不碰交易日历，§26）。
         abnThirdTarget: pd ? (getPreviousTradingDay(pd) || '') : '',
-        abnPrev2Date: abnPrev2Date.value,
-        abnPrev2NoteDate: abnPrev2NoteDate.value
+        // ★★ [ABN-TB-MKTDRAGON 2026-11-26] 触发源已收成【D-2 市龙一】⇒ 落地判据也换成「市龙一读过没有」。
+        abnPrev2LeaderDate: abnPrev2LeaderDate.value,
+        abnPrev2NoteDate: abnPrev2NoteDate.value,
+        // ★★ [DEV-RULE 2026-11-25 用户口径 · 第十七项] 官方偏离值事实（第三十四 / 三十六 / 三十六·b
+        //   的规则输入）落地没有。与 ⑬ 20 日榜 / ⑯ 30 日榜同一个病：事实没到就定稿 ⇒
+        //   定稿的是一份「异动规则全部按判不出放行」的结论，12 秒后数据到货重算又被冻结挡住。
+        //   ⚠️ 判据（纯事实，⛔ 不看时间猜）：
+        //      · 这一天的读取还没完成（`asOf` 对不上）且**确实有票要算** ⇒ 等；
+        //      · 算出了结果（`ready>0`）⇒ 放行；
+        //      · 算不出但也不再等（`pending=false`：已过 09:30 / 已收盘 / 历史日 / 重试用完）⇒ 放行并降级。
+        //      · 一只票都不用算（空仓日 / 还没算出候选）⇒ 不挂（否则空仓日会被永久挂起）。
+        devFactsReady: _devFactsGate(d),
+        // ★★ [HOT-TOPIC-SYNC 2026-11-25 用户口径 · 第十八项] hot note 派生题材已并入缓存。
+        //   与 ⑩ topicLibraryReady（只看 stock_topics 库）不同：原尚股份这类票的题材只在 hot
+        //   note 里，库里没有。不等它 ⇒ 题材还是 '-'（大消费 3 只）时就定稿，hot 到货重建后
+        //   变 4 只、九阳股份进出 ⇒「变来变去」。标志由 Data 层重建后置位（reactive，可读可追踪）。
+        hotDerivedTopicsReady: isHotDerivedTopicsReady()
       });
       if (!_settle.settled) {
         plan.buyPending = true;
@@ -2454,18 +2859,45 @@ export function useTopicVolRatioBoard() {
   }
 
   /**
-   * ★★ [ABNORMAL-ALL 2026-11-13] 显示层用的异动事实：规则层优先，云端 Map 兜底。
+   * ★★ [ABNORMAL-ALL 2026-11-13] 显示层用的异动事实：规则层优先，云端事实兜底。
    *   ⚠️ 只认【日期对得上】的那份（切日期竞态红线，与 prevRangeMap / buyRangeMap 同一条）。
+   *
+   * ★★ [DEV-RULE 2026-11-25 口径整体替换] 入参从「三份十日涨幅 Map」换成「两份官方偏离值事实」：
+   *   旧 `{todayMap: buyRangeMap, prevAucMap: prevAuctionLeg10, prevCloseMap: prevRangeMap}`
+   *      —— 那套是 97% 自定义口径，函数已按新签名改收 `{todayDev, prevDev}`，
+   *      ⛔ 再传旧键名不会报错（`todayDev`/`prevDev` 都 undefined ⇒ 直接 return null），
+   *      表现为「历史日不灰、不空仓」这种**静默失效** —— 所以下面这份注释要留着，
+   *      并有静态锁盯着这两个键名（见 abnormal-overlay.test.js）。
+   *   新：当日事实 = `devFacts.auto`（自动口径那一套，asOf 已与 d 对齐）；
+   *      昨日事实 = `devFacts.byDate.get(前一交易日)`（收盘口径，load 时顺带算好，0 额外请求）。
+   *
+   * ★★ [MARKET-DRAGON-ONLY 2026-11-25 用户口径] 判定对象再加一条硬约束：**只有市龙一**
+   *   （30 日涨幅第 1 名·主板，`dragonName` 从同一份 `getTvrbAuctionBoard30(d)` 取）。
+   *   用户原话：「不是每只股票一异动，都要提示这个的，因为很多股票都不是市龙一……
+   *     他们只是属于个股异动，和题材无关。」
+   *   ⇒ 旧实现按「昨日/今日偏离值最高的那只票」择一，11-24 就挑了北纬科技（+100.11%）
+   *     而非市龙一冰山冷热（+134.21%，未越线）⇒ 历史日被误判成异动日、整屏灰。
    */
   function _abnormalFactForDisplay(d) {
     const live = data.value && data.value.plan;
     if (live && live.abnormal && live.abnormal.show === true) return live.abnormal;
+    const f = _dev.devFacts.value || {};
+    // 切日期竞态：事实那一份还是别的日期 ⇒ 不判（§11 零副作用，⛔ 别拿 11-11 的事实灰 11-12 的屏）
+    if (String(f.asOf || '') !== String(d)) return null;
+    const byDate = (f.byDate instanceof Map) ? f.byDate : null;
+    if (!byDate && !(f.auto instanceof Map)) return null;
     const pd = getPreviousTradingDay(d);
-    return buildAbnormalFactFromMaps({
-      todayMap: (buyRangeDate.value === d) ? buyRangeMap.value : null,
-      prevAucMap: (prevAuctionLeg10Date.value === pd) ? prevAuctionLeg10.value : null,
-      prevCloseMap: (prevRangeDate.value === pd) ? prevRangeMap.value : null
-    });
+    const todayDev = (f.auto instanceof Map) ? f.auto : (byDate ? (byDate.get(d) || null) : null);
+    const prevDev = byDate ? (byDate.get(pd) || null) : null;
+    // ★★ [MARKET-DRAGON-ONLY 2026-11-25] 判定对象只有市龙一（30 日涨幅第 1 名·主板）。
+    //   `getTvrbAuctionBoard30(d)` 自带日期校验（不是这一天的 ⇒ null）⇒ 切日期竞态天然被挡住。
+    //   §10：判不出（榜未就绪 / 空榜）⇒ 交空名，`buildAbnormalFactFromMaps` 直接 return null
+    //   （= 本条判不出，⛔ 绝不退回「随便挑一只越线票」）。
+    const board30 = getTvrbAuctionBoard30(d);
+    const dragonName = (board30 && board30.ready && Array.isArray(board30.rank) && board30.rank.length > 0)
+      ? String(board30.rank[0].stock || '').trim()
+      : '';
+    return buildAbnormalFactFromMaps({ dragonName: dragonName, todayDev: todayDev, prevDev: prevDev });
   }
 
   const _displayPlanBase = computed(function() {
@@ -2512,7 +2944,7 @@ export function useTopicVolRatioBoard() {
   // ⚠️ 幂等：`attachDeviationFacts` 是纯函数、全量重算，⛔ 不依赖「叠过就跳过」的状态。
   // ════════════════════════════════════════════════════════════════════════════════════════
   // ── [ABN-DEV 2026-11-14] 官方偏离值的取数器与依赖的小工具 ─────────────────────────
-  const _dev = useAbnormalDeviation();
+  // ⚠️ `_dev` 本体已提到 `data` computed 之前声明（[DEV-RULE] 规则输入，见那里的注释）。
   /** 20日涨幅主板前十（= 「市场前十」那张参考榜的顺序来源，由 `data` computed 写入） */
   const _devTop10Names = ref([]);
   /** 那十只票的代码（⛔ 名册 `getStockCode` 常缺票 —— 11-14 实测新华传媒就查不到，白丢一只） */
@@ -2547,17 +2979,15 @@ export function useTopicVolRatioBoard() {
     if (b) return b;
     return getStockCode(n) || '';
   }
-  /** 该日的 9:25 竞价口径 20 日涨幅榜是否可用（可用 ⇒ 当天的偏离值用竞价腿） */
-  function _aucReadyForDate(d) {
-    const b = getTvrbAuctionBoard(d);
-    return !!(b && b.ready);
-  }
-
   const displayPlan = computed(function() {
     return attachDeviationFacts(_displayPlanBase.value, _dev.devMap.value, _dev.meta.value);
   });
 
-  /** 偏离值面板要展示的票：市场前十（20日涨幅主板口径）优先，再补买点侧的行（⛔ 顺序即参考顺序） */
+  /**
+   * 偏离值面板要展示的票：市场前十（20日涨幅主板口径）优先，再补买点侧的行（⛔ 顺序即参考顺序）。
+   * ★ [DEV-RULE 2026-11-25] 卖点侧（= 昨天买过、今天要决定怎么卖的票）也必须算 ——
+   *   第三十六条·b「异动卖」要判的就是它们；⛔ 少算了就会出现「该异动卖的票没打标签」。
+   */
   const deviationUniverse = computed(function() {
     const out = [];
     const seen = new Set();
@@ -2573,45 +3003,80 @@ export function useTopicVolRatioBoard() {
       eachBuyBlock(plan, function (b) {
         (b.picks || []).forEach(function (p) { if (p && p.name) push(p.name); });
       });
+      // 卖点侧：昨天买过 / 打过持有标签的票（三十六·b 的判定对象）
+      (Array.isArray(plan.sell) ? plan.sell : []).forEach(function (g) {
+        ((g && g.items) || []).forEach(function (it) { if (it && it.name) push(it.name); });
+      });
     }
     return out;
   });
 
   /**
+   * ★ [DEV-RULE 2026-11-25 / ABN-TB-MKTDRAGON 2026-11-26] 三十四·b 的「D-2 触发源」票名 ——
+   *   必须也进偏离值取数名单。
+   *   为什么单独加：它是**前两个交易日**的【市龙一】（9:26 竞价口径 30 日涨幅第 1 名·主板），
+   *   今天多半既不在前十也不在买点侧，不加进来，`byDate` 里就没有它 D-2 的偏离事实
+   *   ⇒ 三十四·b 永远判不出（静默失效）。
+   *   ⚠️ 触发源已收成市龙一（旧「D-2 十日涨幅最高票」已废除，11-24 北纬科技误触发即由此而来）。
+   *   ⚠️ 只进「取数名单」，⛔ 不进面板展示名单（`deviationUniverse`）。
+   */
+  const _abnTbLeaderName = computed(function() {
+    const d = String(currentDate.value || '').trim();
+    if (!d) return '';
+    const pd = getPreviousTradingDay(d);
+    const target = pd ? (getPreviousTradingDay(pd) || '') : '';
+    if (!target || abnPrev2LeaderDate.value !== target) return '';
+    const leader = abnPrev2Leader.value;
+    return (leader && leader.name) ? String(leader.name).trim() : '';
+  });
+
+  /**
    * 触发一次偏离值取数。
-   * ★ 时点口径（用户点名「特别是竞价时，或者收盘后」）：
-   *   · 竞价时点（今天、且 9:26 竞价档可用）⇒ `basis='auction'`，用今日竞价涨幅顶替末腿
-   *     （指数没有集合竞价成交价 ⇒ 按「指数不动」计，与用户 11-13 那张表的假设一致）；
-   *   · 收盘后 / 历史日 ⇒ `basis='close'`，直接用库里的收盘腿。
-   *   ⛔ 收盘后绝不回填任何「9:25 那一刻」的偏离值 —— 竞价时点那份只在当时算、只用于当时上屏。
+   * ★★ [DEV-BASIS 2026-11-24 用户原话]
+   *   「我要求的是在竞价时间就可以知道它的偏离值看是否触发，所以用竞价口径，等到收盘，
+   *     再覆盖下，再计算……再添加一个竞价口径 toggle，我点开的时候，就可以看到竞价时间的
+   *     看是否触发，这样我就可以对比收盘口径。」
+   *
+   * ⇒ 这里**不再决定口径**：一次把两套都算好（收盘 / 竞价），默认口径由
+   *   `abnormal-deviation.js#deviationBasisFor` 按时点判（竞价时点 = 竞价口径、收盘后 = 收盘口径），
+   *   用户点 toggle 只切「看哪一套」，⛔ 不重新取数（§32）。
+   *   ⚠️ 旧实现传 `todayPctOf: buyRangeMap.pct` —— 那是**10 日区间涨幅**，不是今日竞价涨幅（契约错配），
+   *     现在由 `useAbnormalDeviation` 直接读 `market_metrics.auc_pct_chg`，这里不再传任何涨幅。
+   *
+   * ★★ [DEV-RULE 2026-11-25] 本轮起它还是【规则输入】的来源 ⇒ 要顺带把两个历史日算出来：
+   *   · 上一交易日（D-1）—— 三十四条「异动次日」看它的收盘偏离；
+   *   · 前两个交易日（D-2）—— 三十四·b「第三天禁同题材」看它的收盘偏离。
+   *   两天都复用同一批逐日腿 / 指数腿 ⇒ **0 额外请求**（§32）。
    */
   function _reloadDeviation() {
     const d = String(currentDate.value || '').trim();
     if (!d) { _dev.clear(); return; }
-    const names = deviationUniverse.value;
-    if (!names || names.length === 0) { _dev.clear(); return; }
-    const isToday = d === _bjToday();
-    // ★ 竞价口径只在「今天 + 竞价档可用」时启用：历史日重算一律收盘腿（§11 稳定复盘）
-    const useAuc = isToday && _aucReadyForDate(d);
+    const pd = getPreviousTradingDay(d);
+    const pd2 = pd ? (getPreviousTradingDay(pd) || '') : '';
+    const uni = deviationUniverse.value || [];
+    const extra = _abnTbLeaderName.value;
+    const names = Array.from(new Set(uni.concat(extra ? [extra] : [])));
+    // ⚠️ 一只票都没有时也要走 load（⛔ 不要 clear）：`load([])` 会把「这一天没有可判对象」
+    //   如实落成空事实（asOf 正确、pending=false），买点侧门控才不会被永久挂起。
     _dev.load({
       names: names,
       asOf: d,
-      codeOf: _codeOfName,
-      basis: useAuc ? 'auction' : 'close',
-      todayPctOf: useAuc
-        ? function (name) {
-            const m = buyRangeMap.value;
-            if (!(m instanceof Map)) return null;
-            const hit = m.get(String(name || '').trim());
-            return hit ? hit.pct : null;
-          }
-        : null
+      prevDates: [pd, pd2].filter(Boolean),
+      codeOf: _codeOfName
+      // ⚠️ 不再传「竞价档是否就绪」：默认口径由 `useAbnormalDeviation` 用**真正到货的竞价涨幅**
+      //   （`aucBuilt.ready > 0`）自己判 —— 那比「20 日涨幅榜就绪」更贴近事实（§10）。
     });
   }
 
-  // 只在「日期 / 票集合」变化时重取（§32：⛔ 不许跟着每一帧重算）
+  // 只在「日期 / 票集合 / 数据刷新版本」变化时重取（§32：⛔ 不许跟着每一帧重算）。
+  // ★ [DEV-BASIS] version 入键是必需的：收盘覆盖（16:00）后要靠它重算一次 ——
+  //   否则面板会整晚停在早上那份竞价口径（用户明确要求「等到收盘，再覆盖下，再计算」）。
   watch(
-    function () { return [String(currentDate.value || ''), deviationUniverse.value.join('|')].join('#'); },
+    function () {
+      // ★ [DEV-RULE 2026-11-25] D-2 触发源票名也要入键：它到货要补一次取数（否则三十四·b 判不出）
+      return [String(currentDate.value || ''), deviationUniverse.value.join('|'),
+        _abnTbLeaderName.value, version.value].join('#');
+    },
     function () { _reloadDeviation(); },
     { immediate: true }
   );
@@ -2624,24 +3089,55 @@ export function useTopicVolRatioBoard() {
   /**
    * 面板表头 / 说明（§21：文案全部在 Logic 层拼好，视图零计算）。
    * ⚠️ `visible=false` ⇒ 视图整块不渲染（⛔ 不挂一个空壳占位）。
+   *
+   * ★★ [DEV-BASIS 2026-11-24] 口径文案现在由 `abnormal-deviation.js#deviationBasisNote` 给
+   *   （它会如实写「收盘腿还没入库 ⇒ 现在是上一交易日」这种事实），这里只补充 toggle 相关字段。
    */
   const deviationMeta = computed(function() {
     const m = _dev.meta.value || {};
     const rows = deviationRows.value;
     const okCount = rows.filter(function (r) { return r.ok; }).length;
-    const basisText = m.basis === 'auction'
-      ? '9:25 竞价口径（今日指数按「不动」计）'
-      : '收盘口径（截至最近一个收盘日）';
+    const isAuc = m.basis === 'auction';
+    const basisText = m.basisText || (isAuc
+      ? '9:25 竞价口径（今日个股用竞价涨幅、对应指数按「不动」计）'
+      : '收盘口径（截至最近一个收盘日）');
     let warnText = '';
+    const isTodayAsOf = !!m.asOf && m.asOf === _bjToday();
     if (m.loading && rows.length === 0) warnText = '偏离值读取中…';
     else if (m.error) warnText = '⚠️ ' + m.error + ' ⇒ 本次偏离值判不出（这不是「没有异动」，§10）';
-    else if (m.note) warnText = m.note;
+    else if (isAuc && m.aucReady !== true) {
+      // ★ [DEV-BASIS-DEFAULT] 默认口径就是竞价 ⇒ 早上 9:25 那几十秒「还没落库」必须说成
+      //   「抓取中、到货自动出数」，⛔ 不许让用户以为算错了、也不许说成「没有异动」。
+      warnText = (isTodayAsOf
+        ? '⏳ 今日 9:25 竞价涨幅还在抓取中（约 09:25:32 落库）⇒ 这一屏暂时是「—」，到货自动出数（不是「没有异动」）。'
+        : '⚠️ 这一天的 9:25 竞价涨幅没落库 ⇒ 竞价口径算不出（不是「没有异动」）。') +
+        (m.closeReady ? '要看收盘口径就点上面的「收盘口径」。' : '');
+    } else if (!isAuc && m.closeReady !== true && m.asOf) {
+      warnText = '⚠️ 这一天的收盘腿还没入库 ⇒ 收盘口径算不出。' +
+        (m.aucReady ? '再点一下「收盘口径」按钮可回到竞价口径。' : '');
+    } else if (m.note) warnText = m.note;
     else if (rows.length > 0 && okCount === 0) warnText = '⚠️ 逐日腿 / 指数腿未就绪 ⇒ 偏离值一个都算不出';
     return {
       visible: rows.length > 0,
       asOf: m.asOf || '',
       basis: m.basis || 'close',
       basisText: basisText,
+      // ★★ [DEV-BASIS-DEFAULT 2026-11-24 用户第二轮原话]
+      //   「不用点竞价口径，默认是竞价口径，点开后才变成收盘口径。你应该把竞价口径 toggle
+      //     变成收盘口径，我想看收盘口径时点开就可以看了。」
+      //   ⇒ 按钮固定叫「收盘口径」，`closeView` = 正在看收盘（高亮）；默认（竞价口径）不高亮。
+      //     视图只读这两个字段，⛔ 不自己判口径（§21）。
+      auctionView: isAuc,
+      closeView: !isAuc,
+      canToggle: !!(m.aucReady || m.closeReady),
+      toggleHint: isAuc
+        ? '当前：竞价口径（默认 · 9:25 那一刻，用来判断「开盘前是否会触发」）｜点一下看收盘口径'
+        : '当前：收盘口径（当日收盘后，复盘用）｜再点一下回到竞价口径（默认）',
+      toggleNote: (m.aucReady && m.closeReady)
+        ? '两个口径都已算出，可直接对比。'
+        : (!m.aucReady && !m.closeReady
+          ? '这一屏两个口径都还没算出（等 9:25 抓取 / 收盘腿入库）。'
+          : (m.aucReady ? '竞价口径已算出；收盘腿还没入库。' : '收盘口径已算出；竞价涨幅没落库 ⇒ 竞价口径算不出。')),
       ready: typeof m.ready === 'number' ? m.ready : 0,
       total: typeof m.total === 'number' ? m.total : rows.length,
       loading: !!m.loading,
@@ -2655,6 +3151,11 @@ export function useTopicVolRatioBoard() {
       warnText: warnText
     };
   });
+
+  /** 用户点「竞价口径」toggle：只切看哪一套，⛔ 不重新取数、⛔ 不改任何选股结论 */
+  function toggleDeviationBasis() {
+    _dev.toggleBasis();
+  }
 
   // ════════════════════════════════════════════════════════════════════════════════════════
   // ★★ [BUY-SETTLE-2 2026-10-31 用户口径 · 第三版] 买点侧「结果确认」的两道闸门
@@ -2712,6 +3213,23 @@ export function useTopicVolRatioBoard() {
           planSnapshot.value = { date: key, status: 'corrupt', reason: dec.reason };
           _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 存档损坏（' + dec.reason +
             '）⇒ 拒绝当结论显示，改按恒竞价口径重算并修复');
+          return;
+        }
+        // ★★ [DIVERGE-FREEZE 2026-11-20 事故 · 用户报障「一直停留在总龙分歧判定计算中，标题却显示 3 只」]
+        //   🔴 根因：定稿闸门只挡了 `plan.buyPending` / `buyDataGate.blocked`，**漏了 `divergePending`**
+        //      ⇒ 买点侧「判定计算中」那一帧（占位 + 已经算出的 3 只票）被当成「稳定定稿」冻结并写进
+        //      `tvrb_plan_snapshot`（11-20 实测：plan.divergePending=true / pickCount=3）
+        //      ⇒ 之后每次打开/刷新/切日期都读回这同一份坏存档 ⇒ 占位永远解除不了（看门狗再跑也没用，
+        //      屏幕读的是快照不是实时 plan）。标题那 3 只也是这份存档的 pickCount（summaryText 缺占位分支）。
+        //   ✅ 读侧防御（§11 判断→保护→执行→验证，⛔ 不删任何行）：存档自带「占位标记」⇒ 它根本不是结论
+        //      ⇒ 判 corrupt ⇒ `shouldPersistPlanSnapshot(repair-corrupt)` 允许重算并覆盖修订，
+        //      库里那行会被一次干净定稿自然修好。判据在 `isSnapshotPlaceholderFrame`（纯函数 + 单测）。
+        //   ⚠️ 只看 plan 自身的占位标记，⛔ 不猜 rules_sig / inputs_sig（那是「输入是否完整」，另一件事）。
+        if (isSnapshotPlaceholderFrame(dec.plan)) {
+          planSnapshot.value = { date: key, status: 'corrupt', reason: 'frozen-placeholder-frame' };
+          _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 存档里冻结的是买点侧【占位帧】（pickCount=' +
+            (dec.plan.pickCount || 0) + '，divergePending=' + !!dec.plan.divergePending +
+            '，buyPending=' + !!dec.plan.buyPending + '）⇒ 它不是结论，判 corrupt，用当前完整输入重算并覆盖修复');
           return;
         }
         const row = r.row || {};
@@ -2780,7 +3298,8 @@ export function useTopicVolRatioBoard() {
    *    现在【任何日期】算出干净定稿都入库；规则指纹变了就重算并**覆盖修订**。
    *
    * 🔴 仍然保留的准入（把不完整结论固化成存档比没有存档更糟）：
-   *   ① 硬兜底放行 / 输入未齐 / 数据闸门拦下的降级结论不写；
+   *   ① 输入未齐 / 分歧占位 / 数据闸门拦下的降级结论不写；
+   *      ★ [HARD-STALL-PERSIST 2026-11-26] 「网络硬兜底」**不再**算降级 —— 理由见下面函数体首段。
    *   ② 读档失败 / 表不存在 ⇒ **绝不覆盖**（§10 / §11 不知道库里原来有没有好存档）；
    *   ③ 规则指纹未就绪（核心词没加载完）不写，避免存入空指纹导致下次必判 stale；
    *   ④ 编码失败 / 超过体积上限不写，且必须留痕（§10 禁止静默）；
@@ -2792,10 +3311,52 @@ export function useTopicVolRatioBoard() {
   function _persistPlanSnapshot(d, plan) {
     const key = String(d || '').trim();
     if (!key || !plan) return;
+    // ★★ [NEXT-DAY-BUY-4 2026-11-28] 这里【不再】因为「上一日 nextDayBuy 还在读」而拒绝存档：
+    //   承接块已改为展示层补算，规则层不再依赖跨日输入 ⇒ 这一帧的 plan 就是完整结论，
+    //   该冻结就冻结（否则每次切日期都要重算 ⇒ 用户实测「加载比之前慢很多」）。
+    //   历史教训（八修那一版）：用异步输入当存档闸门 ⇒ 存档永远冻不上 ⇒ 天天全量重算。
     // ① 降级结论不入库（与日期无关，今天 / 历史日一视同仁）
-    if (netHardStalled.value) return;
-    if (plan.buyPending) return;
-    if (plan.buyDataGate && plan.buyDataGate.blocked) return;
+    //
+    // ★★ [HARD-STALL-PERSIST 2026-11-26 用户报障「11-23 当天没见这只票，现在又冒出来了」]
+    //   这里原本第一行是一条「硬兜底就算降级、直接 return」的守卫 —— **本轮删除**，理由如下。
+    //
+    //   🔴 事故链（11-23，页面 `[TVRB-*]` 日志原文，不是推测）：
+    //     · 02:21:47 `[TVRB-BUY-SETTLE] 2026-11-23 选股输入已齐 ⇒ 买点侧放行`
+    //                ⇒ 规则层判九项输入**全齐**（`plan.buyPending === false`），结论是完整的；
+    //     · 02:22:06 `netHardStalled` 到点（装载窗口 02:21:21 + `NET_HARD_MS` 45s）；
+    //     · 02:22:08 `[TVRB-BUY-PUBLISH] 2026-11-23 选股结论【定稿】（上游硬兜底，结论可能不完整，已标注）`
+    //                ⇒ 被本函数第一行整份丢弃，**一次重算的机会都没留下**；
+    //     · 02:24 起轮询 160s，库里一直是 `v28:79cb50e9 rev=2`（远早于 v34）
+    //                ⇒ 页面自己显示新文案，别人打开那天读到的还是旧存档。
+    //   ⇒ 后果是**整类**的：只要尾部请求拖过 45s（慢网 / 冷启动 / 历史日请求本来就多 / 走代理），
+    //     那一天的定稿就永远不入库。而 `_buyPublished` 已把这一天闩死（同一天不再定稿），
+    //     所以连「等网络静默后再补写一次」都没有 —— 彻底没机会。
+    //     用户体感正是：「口径没对上、非常乱、当天没见、现在又冒出来」。
+    //
+    //   ✅ 口径纠正：`netHardStalled` ≠「结论残缺」。它只表示「窗口到期仍有请求在途，我们不等了」
+    //     （`net-activity.js` 硬兜底计时器是无条件置 true 的）。
+    //     结论残不残缺，权威判据只有下面三条，全部来自规则层的实际产出：
+    //       · `plan.buyPending`          —— 买点侧输入没齐（`resolveBuySettle` 判的）；
+    //       · `plan.divergePending`      —— 总龙分歧判定未落地（占位帧，与读侧判据同源）；
+    //       · `plan.buyDataGate.blocked` —— 数据缺失闸门「今天不能选股」。
+    //     ⚠️ 硬兜底能穿透定稿门控（`&& !netHardStalled.value`）⇒ 真降级时 `buyPending` 仍为 true
+    //       ⇒ 下面第一条照样拦住。所以删掉硬兜底判断**不会**把残缺结论写进库（单测已钉死）。
+    //   ⚠️ `_buyPublished.degraded` 原样保留：UI 仍要如实提示「读取超时」，只是它不再影响落库。
+    // §10 禁止静默：三条准入拦下都要留痕 —— 这次排查绕远路，正是因为库里看不出「为什么没写」。
+    if (plan.buyPending) {
+      _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 买点侧输入未齐（buyPending）⇒ 本次不存档');
+      return;
+    }
+    // ★ [DIVERGE-FREEZE 2026-11-20 写读对称补齐] 读侧把 `divergePending` 判 corrupt，
+    //   写侧原来没挡它（只靠读侧兜底）。现在两侧同源：占位帧根本不入库。
+    if (plan.divergePending) {
+      _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 买点侧仍是分歧占位帧（divergePending）⇒ 本次不存档');
+      return;
+    }
+    if (plan.buyDataGate && plan.buyDataGate.blocked) {
+      _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 数据闸门已拦（buyDataGate.blocked）⇒ 本次不存档');
+      return;
+    }
     const snap = planSnapshot.value;
     if (!snap || snap.date !== key) return;      // 状态不属于这天 ⇒ 不写（§10）
     const rulesSig = String(currentRulesSig.value || '').trim();
@@ -3004,6 +3565,17 @@ export function useTopicVolRatioBoard() {
     //    ⚠️ 硬兜底（30s）必须能穿透这一条：上游真的算不出来时，宁可给一份「带警示的定稿」，
     //      也不能让买点侧永久停在占位（那就是用户说的「打不开」）。
     if (plan && plan.buyPending && !netHardStalled.value) return;
+    // ★★ [DIVERGE-FREEZE 2026-11-20 事故] 买点侧还在挂「总龙分歧判定计算中」占位 ⇒ **不是结论，不许定稿**。
+    //   🔴 事故（用户原话）：「题材量比那里没有出结果，一直停留在这样提示中，总龙分歧判定计算中……，
+    //      但是那个计数标题头却显示 3 只」。
+    //      11-20 库内实证：`tvrb_plan_snapshot(2026-11-20)` 里 `plan.divergePending=true` / `pickCount=3`
+    //      ⇒ 占位帧被冻成当天存档 ⇒ 之后每次打开都读回它 ⇒ 占位永远不解除、标题永远写 3 只。
+    //   ✅ 与 `plan.buyPending` 完全同款的位置与语义：占位 = 「在等」，不是「结论」（§10 拿没数据当结论）。
+    //   ⚠️ 硬兜底（`netHardStalled`）必须能穿透：上游真的算不出来时，宁可定稿一份带警示的结论，
+    //      ⛔ 也不能让买点侧永久停在占位 —— 这正是「占位挂死」的来源。
+    //   ⚠️ 与分歧判定自身的出口配套：判定落地（含 20s 看门狗落「判不出」终态）⇒ divergePending 消失
+    //      ⇒ 下一帧照常定稿。⛔ 别在这里另起超时把占位强行摘掉（§35）。
+    if (plan && plan.divergePending && !netHardStalled.value) return;
     _buyRelease.value = key;
     // ★★★ [BUY-PUBLISH 2026-10-31 · 第五版] **放行 = 定稿**：把这一刻的 plan 冻结成屏幕的唯一来源。
     //   ⛔ 同一天只发布一次 —— 之后再怎么放行、指纹再怎么变都不覆盖（覆盖就等于「又变了」）。
@@ -3172,6 +3744,39 @@ export function useTopicVolRatioBoard() {
   const switchDay = computed(() => (displayPlan.value && displayPlan.value.switchDay) || null);
   const newDragon = computed(() => (displayPlan.value && displayPlan.value.newDragon) || null);
   /**
+   * ★★ [NEXT-DAY-BUY 2026-11-27 用户口径 · 规则手册八修] 第二十八条【次日承接】买点块
+   * （= 昨天切换日选出的新龙，今天才买）。
+   * ⚠️ 与 ebbBuy / newDragon 同一约定：它【不在 blocks 里】，视图要渲染在灰化容器【之外】，
+   *   而且是【今天真要买】的那几只 —— 被 grayscale 吞掉就等于买点消失。
+   *   没有上一日名单（读不到 / 那天没有）⇒ null ⇒ 视图 v-if 不渲染（§10 不拿空壳冒充结论）。
+   */
+  const nextDayCarry = computed(function() {
+    const p = displayPlan.value;
+    if (!p) return null;
+    // ① 规则层算出来的（新鲜重算 / 存档里已经带着）优先 —— 那一条连 buyNames / 计数都算好了
+    if (p.nextDayCarry) return p.nextDayCarry;
+    // ② 冻结存档里没有 ⇒ 展示层补算。
+    //   ★★ [NEXT-DAY-BUY-3 2026-11-28 用户报障·11-20] 「华东重机还是没有变化啊，也没有打上标签，
+    //      原版也没有见分块」。根因：11-20 的定稿是在「上一日（11-19）存档还没读完」那一帧冻住的，
+    //      那份 plan 里 `nextDayCarry = null`；而存档已判新鲜 ⇒ 规则层不会再算 ⇒ 承接块永远不出现。
+    //   ⇒ 承接块的来源本来就不是「今天算出来的结论」，而是【上一交易日存档的跨日输入】，
+    //      所以展示层完全可以从 `prevNextDayBuy` 独立补出来（§4 ViewModel，不产生第二个真相：
+    //      名单仍唯一来自 11-19 存档的 `newDragon.nextDayBuy`）。
+    //   ⚠️ 这张补算块【不进】 buyNames / 选股计数（那些只能用规则层那一份，⛔ 别在这里假装算过）。
+    const v = prevNextDayBuyForDay.value;
+    if (!v) return null;
+    if (p.buyDataGate && p.buyDataGate.blocked) return null;   // 数据缺失日：买点侧整体空仓
+    if (p.abnormal && p.abnormal.show) return null;            // 异动日：全场空仓
+    if (p.buyPending || p.divergePending) return null;         // 结果未定稿：不许先亮一块
+    // 反查代码 / 涨幅用（拿不到就留空，§10 不猜）
+    const list = [];
+    (p.blocks || []).forEach(function(b) {
+      const m = b && b.block && b.block.members;
+      if (Array.isArray(m)) m.forEach(function(x) { list.push(x); });
+    });
+    return buildNextDayCarryBlock(v, list);
+  });
+  /**
    * ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条【十日涨幅 · 在列次数候补】那一只的买点块。
    * ⚠️ 与 ebbBuy / divergeBuy / newDragon 同一约定：它【不在 blocks 里】，
    *   视图必须渲染在灰化容器（.tvrb-buy-list.tvrb-ebb）【之外】——
@@ -3179,6 +3784,22 @@ export function useTopicVolRatioBoard() {
    *   不需要候补 / 选不出（含数据未到）⇒ null ⇒ 视图 v-if 不渲染（§10 不拿空壳冒充结论）。
    */
   const range10Backup = computed(() => (displayPlan.value && displayPlan.value.range10Backup) || null);
+  /**
+   * ★★ [RULE-35-RENDER 2026-11-19 用户三次报障的决定性一环] 第三十五条【30日涨幅抱团】那一块。
+   *
+   * 🔴 为什么它必须单独一条通道（而不是顺手塞进 weakHuddle 槽位）：
+   *   plan 层早就把这一块算出来挂在 `plan.top30Huddle` 上了（规则本身是对的），但**视图从来没有
+   *   读过这个键** —— `EXTRA_BLOCK_KEYS` / `tickTargets` / 返回对象三处全都没有它。
+   *   ⇒ 屏幕上永远不会出现那一行，用户看到的是「三十条/三十一条照旧出票」的样子，
+   *     连续三轮报障「还是一样、根本没生效」。§6 的教训：算出来了 ≠ 上得了屏，
+   *     一条规则要有【判定 + 槽位 + 渲染 + 分笔 + 装饰器】五件套才算接通。
+   *
+   * ⚠️ 与 weakHuddle / catchUp 同一约定：它【不在 blocks 里】，视图必须渲染在灰化容器
+   *   （.tvrb-buy-list.tvrb-ebb，父级 grayscale）【之外】，并且排在最前面 ——
+   *   因为第三十五条命中时 三十/三十一/三十二 三条全部让路，它就是今天【唯一】能买的那一只。
+   *   判不出 / 同大类不在前三 ⇒ null ⇒ 视图 v-if 不渲染（§10 不拿空壳冒充结论）。
+   */
+  const top30Huddle = computed(() => (displayPlan.value && displayPlan.value.top30Huddle) || null);
   /**
    * ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条【弱势切抱团】那一块（20日涨幅主板前三 ∧ 与退潮题材同题材）。
    * ⚠️ 与 ebbBuy / divergeBuy / newDragon / range10Backup 同一约定：它【不在 blocks 里】，
@@ -3381,6 +4002,16 @@ export function useTopicVolRatioBoard() {
     // ★ [BUY-SETTLE 2026-10-31] 口径确认中 ⇒ 头部不能写「选股 2 只」（列表已经收起来了，
     //   写数字会让人以为那两只就是要买的票）。⛔ 也不写「0 只」——那是空仓结论（§10）。
     //   把「还差哪几项」摆出来，用户才知道为什么还没有结果（他自己要的那句提示语）。
+    // ★★ [DIVERGE-FREEZE 2026-11-20 事故 · 用户原话]「那个计数标题头却显示 3 只，要修复下」。
+    //   分歧占位（`divergePending`）与 `buyPending` 是同一类「在等」状态：买点侧不显示选票，
+    //   标题就 ⛔ 不许出现「选股 N 只」—— 那个 N 是已经算出来但被占位挡住的中间结果，写出来必然误导
+    //   （用户做决定只看标题那一行）。⚠️ 顺序必须与模板一致：数据闸门 > 分歧占位 > 结果确认中。
+    if (divergePending.value) {
+      let g = '⏳ 分歧判定计算中…（判定落地前不显示选票）';
+      if (sellCount.value > 0) g += ' · 卖点 ' + sellCount.value + ' 只（不受影响）';
+      if (loading.value) g += ' · 分笔抓取中…';
+      return g;
+    }
     if (buyPending.value) {
       let s = '⏳ 结果确认中…' + (buyPendingText.value ? '（' + buyPendingText.value + '）' : '');
       if (sellCount.value > 0) s += ' · 卖点 ' + sellCount.value + ' 只（不受影响）';
@@ -3432,6 +4063,8 @@ export function useTopicVolRatioBoard() {
     // ★★ [WEAK-HUDDLE 2026-10-27] 「弱势切抱团」同理（第三十条，同样不在 blocks 里）
     [blocks.value,
       ebbBuy.value ? [ebbBuy.value] : [],
+      // ★★ [RULE-35-RENDER 2026-11-19] 30日涨幅抱团那一只也要抓分笔（它同样不在 blocks 里）
+      top30Huddle.value ? [top30Huddle.value] : [],
       weakHuddle.value ? [weakHuddle.value] : [],
       // ★★ [CATCH-UP 2026-10-27] 补涨题材同理（第三十一条，同样不在 blocks 里）
       catchUp.value ? [catchUp.value] : []].forEach(function(arr) {
@@ -3567,7 +4200,13 @@ export function useTopicVolRatioBoard() {
   // ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条的【在列次数】按展示日补齐（切日期就补一次）。
   //   幂等 + 会话缓存 + 单飞都在 Data 层（auction-presence.js）⇒ 这里重复触发也只是命中缓存（§32）。
   //   ⚠️ 用 immediate：首屏那一次也要读（否则第一帧永远判不出「首次在列」）。
-  watch(currentDate, function(d) { ensureRange10Presence(d); }, { immediate: true });
+  watch(currentDate, function(d) {
+    _stopPresenceWait();
+    // 早盘窗口（今天 + 09:35 前）最多重试 6 次 ≈ 2 分钟：等 `auction_presence-open`（09:26）落库；
+    // 历史日 / 已过窗口 ⇒ 0 次，立即按「判不出」放行（⛔ 不让买点侧永久锁死）。
+    _presenceTryLeft = _presenceGaveUp(d) ? 0 : 6;
+    ensureRange10Presence(d);
+  }, { immediate: true });
 
   // §17 数据刷新（早盘竞价抓取 / 导入 / 收盘覆盖）→ 重算 + 补一次分笔读取。
   const _onRefresh = function() {
@@ -3614,6 +4253,8 @@ export function useTopicVolRatioBoard() {
     ebbBuy,
     ebbNodeNote,
     divergeBuy,
+    // ★★ [RULE-35-RENDER 2026-11-19] 第三十五条「30日涨幅抱团」买点块（渲染在灰化容器之外、最前面）
+    top30Huddle,
     // ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条「弱势切抱团」买点块（渲染在灰化容器之外、最前面）
     weakHuddle,
     // ★★ [CATCH-UP 2026-10-27] 第三十一条「补涨题材」买点块
@@ -3634,6 +4275,8 @@ export function useTopicVolRatioBoard() {
     // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条「新龙 / 新题材切换日」
     switchDay,
     newDragon,
+    // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] 第二十八条【次日承接】（昨天选、今天买）
+    nextDayCarry,
     // ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条「十日涨幅 · 在列次数候补」
     range10Backup,
     summaryText,
@@ -3644,6 +4287,10 @@ export function useTopicVolRatioBoard() {
     //   ⛔ 面板只读，绝不参与选股；买点行徽标走 displayPlan 的 p.devBadge（同一个 devMap）。
     deviationRows,
     deviationMeta,
+    // ★★ [DEV-BASIS 2026-11-24 用户口径] 「竞价口径 toggle」—— 点一下切「看哪一套」，
+    //   两套都已经算好（收盘 = 当日收盘腿；竞价 = 9:25 竞价涨幅 + 指数按不动），
+    //   ⛔ 切换不重新请求、⛔ 不改任何选股结论，只换屏幕上那一列数字。
+    toggleDeviationBasis,
     toggleExpand,
     toggleCompact,
     setRulesOpen,

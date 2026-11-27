@@ -23,4 +23,12 @@ export const CONFIG = {
 
   // fuyao historical 并发数（同时发起的请求数，避免被限流）
   HISTORICAL_CONCURRENCY: 10,
+
+  // [BARS-BATCH-CLOUD 2026-11-20] 同花顺批量历史日线的单次代码上限（官方 10）。
+  //   20/30 日涨幅补腿靠它把 33 只压到 4 次 subrequest（⛔ 逐只打会把 50 次配额顶爆）。
+  HISTORICAL_BATCH_SIZE: 10,
+
+  // [BARS-BATCH-CLOUD 2026-11-20] 补腿 / 补 30 日涨幅的单趟时间预算（毫秒）。
+  //   9:26 那趟有「不超过 9:27」的硬指标 ⇒ 超预算就停手，把剩下的留给 9:27 / 16:03 幂等重跑。
+  BARS_FILL_BUDGET_MS: 20000,
 };

@@ -249,7 +249,34 @@
               <TvrbDeviationBoard
                 :rows="deviationRows"
                 :meta="deviationMeta"
+                @toggle-basis="toggleDeviationBasis"
               />
+              <!-- ★★ [RULE-35-RENDER 2026-11-19 用户口径] 第三十五条【30日涨幅抱团】买点：
+               用户原话「11月17日……如果有同题材的股票在30日涨幅中排前三，那么就优先选，记住是竞价口径，
+               上面的那个补涨题材选票要让路（也就是三十一条让路，不选，不用这条）」。
+               ⛔ 必须渲染在 .tvrb-buy-list 之外（那个容器挂着父级 filter: grayscale(1)，
+                  放进去等于把今天要买的那只也灰掉），且排在【最前面】—— 它是【覆盖式】的一条，
+                  命中时 三十 / 三十一 / 三十二 全部让路，今天唯一能买的就是这一只。
+               ⛔ 类名独立（.tvrb-top30-huddle-only-*）—— 六条规则各不相同，DOM 查询不能混。
+               ⚠️ 判不出 / 同大类不在前三 ⇒ null ⇒ 不渲染（= 回到三十/三十一，§10 不拿空壳冒充结论）。 -->
+              <div
+                v-if="top30Huddle"
+                class="tvrb-top30-huddle-only-buy"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!top30Huddle.abnormalTopicGray) }"
+              >
+                <div class="tvrb-top30-huddle-only-label tvrb-selectable">
+                  30日涨幅抱团 · 买点（第三十五条 · 从30日涨幅前三选，不是选题材）
+                </div>
+                <div class="tvrb-top30-huddle-only-note tvrb-selectable">
+                  题材已退潮（整段灰化），但它的票仍在【30日涨幅主板前三】之内（9:26 竞价口径）⇒
+                  行情差时资金会继续抱团最强的那个，还没轮到补涨 —— 这一只是今天可以买的，
+                  第三十条 / 第三十一条 / 第三十二条今天一条都不出票。
+                </div>
+                <TvrbBuyBlock
+                  :block="top30Huddle"
+                  :head-text="top30Huddle.block.topic"
+                />
+              </div>
               <!-- ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条【弱势切抱团】买点：
                用户原话「…从灰色的题材块中核对 20 日涨幅，看有没有排名前三的股票在其中（同题材），
                如果有再重新选入，因为行情差时，选市场龙头（也是题材龙头），叫弱势切抱团。
@@ -262,7 +289,7 @@
               <div
                 v-if="weakHuddle"
                 class="tvrb-weak-huddle-only-buy"
-                :class="{ 'tvrb-abnormal-gray': abnormalGray || !!weakHuddle.abnormalTopicGray }"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!weakHuddle.abnormalTopicGray) }"
               >
                 <div class="tvrb-weak-huddle-only-label tvrb-selectable">
                   弱势切抱团 · 买点（第三十条 · 从市场龙头选，不是选题材）
@@ -290,7 +317,7 @@
               <div
                 v-if="catchUp"
                 class="tvrb-catchup-only-buy"
-                :class="{ 'tvrb-abnormal-gray': abnormalGray || !!catchUp.abnormalTopicGray }"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!catchUp.abnormalTopicGray) }"
               >
                 <div class="tvrb-catchup-only-label tvrb-selectable">
                   补涨题材 · 买点（第三十一条 · 20日涨幅第 6~10 名里只选连板票）
@@ -314,7 +341,7 @@
               <div
                 v-if="ebbBuy"
                 class="tvrb-ebb-only-buy"
-                :class="{ 'tvrb-abnormal-gray': abnormalGray || !!ebbBuy.abnormalTopicGray }"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!ebbBuy.abnormalTopicGray) }"
               >
                 <div class="tvrb-ebb-only-label tvrb-selectable">
                   {{ ebb && ebb.buyOnlyLabelText ? ebb.buyOnlyLabelText : '退潮替补 · 买点' }}
@@ -331,7 +358,7 @@
               <div
                 v-if="divergeBuy"
                 class="tvrb-diverge-only-buy"
-                :class="{ 'tvrb-abnormal-gray': abnormalGray || !!divergeBuy.abnormalTopicGray }"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!divergeBuy.abnormalTopicGray) }"
               >
                 <div class="tvrb-diverge-only-label tvrb-selectable">
                   总龙首次分歧 · 买点（第二十五条）
@@ -355,7 +382,7 @@
               <div
                 v-if="newDragon"
                 class="tvrb-newdragon-only-buy"
-                :class="{ 'tvrb-abnormal-gray': abnormalGray || !!newDragon.abnormalTopicGray }"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!newDragon.abnormalTopicGray) }"
               >
                 <div class="tvrb-newdragon-only-label tvrb-selectable">
                   新龙 / 新题材切换日 · 买点（第二十八条）
@@ -365,6 +392,17 @@
                   :head-text="newDragon.block.topic"
                 />
               </div>
+              <!-- ★★ [NEXT-DAY-BUY 2026-11-27 用户口径 · 规则手册八修] 第二十八条【次日承接 · 新龙】：
+               昨天（切换日）选出的新龙，今天才是真正要买的那一天。
+               结构与「新龙」那一块并列（同样在灰化容器 .tvrb-buy-list【之外】—— 今天真要买的票
+               不能被 grayscale 吞掉）；没有上一日名单 ⇒ Logic 层给 null ⇒ 这里不渲染。
+               ⛔ 类名独立（.tvrb-ndc-*）—— 与第二十八「新龙」块是两条时间线，DOM 查询不能混。
+               ⚠️ 组件也是独立的（TvrbNextDayCarryBlock）：本块是【跨日兑现】语义，
+                  塞进 TvrbBuyBlock 会让「今天选」和「昨天选」两套字段互相污染。 -->
+              <TvrbNextDayCarryBlock
+                v-if="nextDayCarry"
+                :block="nextDayCarry"
+              />
               <!-- ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条【十日涨幅 · 在列次数候补】那一只。
                结构与退潮替补 / 分歧买点 / 新龙同一形态：渲染在灰化容器 .tvrb-buy-list【之外】
                （今天真要买的那一只不能被 grayscale 吞掉）；不需要候补 / 选不出 / 次数未到 ⇒ 不渲染。
@@ -377,7 +415,7 @@
               <div
                 v-if="range10Backup"
                 class="tvrb-r10backup-only-buy"
-                :class="{ 'tvrb-abnormal-gray': abnormalGray || !!range10Backup.abnormalTopicGray }"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!range10Backup.abnormalTopicGray) }"
               >
                 <div class="tvrb-r10backup-only-label tvrb-selectable">
                   十日涨幅候补 · 买点（第二十九条 · 全市场选股，不是选题材）
@@ -410,7 +448,7 @@
                   v-for="b in blocks"
                   :key="'tvrb-buy-' + b.topic"
                   :block="b"
-                  :gray="!!b.prevEbbGray || !!b.leaderLimitDownGray || !!b.topicVolWeakGray || !!b.abnormalTopicGray"
+                  :gray="!!b.prevEbbGray || !!b.leaderLimitDownGray || !!b.topicVolWeakGray || (!!b.abnormalTopicGray)"
                 />
               </div>
               <div
@@ -482,6 +520,10 @@ import TvrbDeviationBoard from '../components/topicvolratio/TvrbDeviationBoard.v
 // ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ 不能选股的专用提示板
 import TvrbDataGate from '../components/topicvolratio/TvrbDataGate.vue';
 import TvrbSellBlock from '../components/topicvolratio/TvrbSellBlock.vue';
+// ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] 第二十八条【次日承接 · 新龙】的独立小买点块。
+//    ⛔ 刻意不复用 TvrbBuyBlock：那边是「今天按题材选出来的票」，本块是「昨天选、今天买」的跨日语义，
+//      混在一起以后改任一条规则都会互相污染（用户要求「避免搞混以前逻辑」）。
+import TvrbNextDayCarryBlock from '../components/topicvolratio/TvrbNextDayCarryBlock.vue';
 import { useTopicVolRatioBoard } from '../composables/useTopicVolRatioBoard.js';
 
 // ⛔ 只调用一次组合式：重复调用会拿到【另一套 ref】，expose 出去的 refresh 就刷新不到本实例上
@@ -509,6 +551,8 @@ const {
   // ★★ [ABN-DEV 2026-11-14 用户口径] 官方偏离值面板的两份数据（行 + 表头/说明，文案全在 Logic 层）
   deviationRows,
   deviationMeta,
+  // ★★ [DEV-BASIS 2026-11-24 用户口径] 「竞价口径 toggle」—— 切「看哪一套」，不重新取数
+  toggleDeviationBasis,
   // ★★ [ABNORMAL-ALL 2026-11-13] 监管异动 ⇒ 买点侧【全部】灰色（含六个灰化容器之外的独立块）。
   //   判据只在 Logic 层（abnormal-overlay#isAbnormalAllGray），模板零计算（§21）。
   abnormalGray,
@@ -534,9 +578,15 @@ const {
   // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条新龙 / 切换日（switchDay 的文案已由 Logic 层写进
   //   block.reason / notes，模板不需要它 ⇒ ⛔ 不解构，免得留一个未使用变量）
   newDragon,
+  // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] 第二十八条【次日承接 · 新龙】（昨天选、今天买）。
+  //   没有上一日名单 / 那天确实没有 ⇒ null ⇒ 不渲染（§10 不拿空壳冒充结论）。
+  nextDayCarry,
   // ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条「十日涨幅 · 在列次数候补」那一只
   //   （同样渲染在灰化容器【之外】：题材量比太小被作废后，它才是今天真正要买的那一只）
   range10Backup,
+  // ★★ [RULE-35-RENDER 2026-11-19] 第三十五条「30日涨幅抱团」买点块
+  //   （渲染在灰化容器【之外】、排在【最前面】—— 它命中时 三十/三十一/三十二 三条全部让路）
+  top30Huddle,
   // ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条「弱势切抱团」买点块
   //   （渲染在灰化容器【之外】且排在所有前置买点的【第一位】—— 用户「放在最前面」）
   weakHuddle,

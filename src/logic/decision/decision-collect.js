@@ -24,6 +24,8 @@ import { getDragonLeadersForDisplay } from '../auction/dragon-group.js';
 import { getPrevSoldInheritedSet } from '../auction/inherited-sold.js';
 // [DIVERGE-TOPIC 2026-11-15] 同题材认亲统一用这一份「题材串切段」实现（§6 不另写正则）
 import { splitTopicSegments } from '../topic/core-category.js';
+// [TEMP-CORE-SCOPE 2026-11-27] 前五事实化的题材串要按【该日】隔离掉未生效的临时题材词
+import { getHiddenTopicTokensForDate } from '../topic/rules.js';
 // [GRAY-DRAGON 2026-09-26] 灰行（不在当日正式列表的继承票）的观察组来源，与早盘竞价同款（§6）
 import { getJingYestHighlightSetForDate } from '../auction/sort-rules.js';
 // [SEAL 2026-10-11 用户口径] 决策看板逐票「封单额 + 变化 + 连板」：口径与读取全在 seal-volume.js
@@ -938,7 +940,7 @@ export function _cleanTopicText(raw) {
   return s;
 }
 
-function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDate, range20Top, range20Wide, range20Top10) {
+function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDate, range20Top, range20Wide, range20Top10, range30Top) {
   const none = {
     ready: false, leader: null, second: null,
     leaderSuspended: false, leaderShare: null, leaderAucPct: null,
@@ -947,6 +949,7 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
     top5: [],        // [DIVERGE 2026-10-20] 缺省空数组（前五没就绪 ⇒ 分歧规则同样不生效）
     newDragonPool: [], // [NEW-DRAGON-08 2026-10-22] 前八候选（切换日新龙判定用）
     topicPool: [],     // [EBB-MAIN-TOPIC 2026-10-25] 前十（主线题材成组计数用）
+    top30: [],         // [RULE-35 2026-11-18] 30日涨幅榜（第三十五条候选池；空 = 判不出，§10）
     leaderStreak: null, // [EBB-STREAK 2026-10-25] 总龙连板天数（null = 无从判定）
     leaderStreakLabel: ''
   };
@@ -1000,6 +1003,16 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
   // ⇒ 与 `data/stock-topics.js` 2026-09-19 的全局口径一致：共享题材库是跨看板题材的**唯一权威**，
   //   历史 note 只作「库里没有这只票」时的兜底。⛔ 别再把今日行放回第一位。
   // ⚠️ 保留整串（逗号连接）：第二十八条要按【题材段】（东方 / 羊字辈）认亲，只取一个会丢掉字辈线。
+  // ★★ [TEMP-CORE-SCOPE 2026-11-27 用户报障] 但这份「权威题材库」是【跨日期并集】：
+  //   stock_topics 一票一行，buildTopicCache 还并进近 66 天全部 note ⇒ 11-18 才建的临时词
+  //   「羊字辈」（东方海洋 / 阳光照明 / 光洋股份… 全是 11-18 写入）会回灌到 11-04 / 11-12 的前五事实里，
+  //   再被 `pickLeaderTopicSegment` 当【字辈线】选成退潮题材（[EBB-LINEAGE-FIRST]），
+  //   最后被第二十八条写成「【羊字辈】（老龙一 东方海洋）… 那天前十里有 2 只【羊字辈】」。
+  //   用户原话：「11月12日题材量比选股侧，提示板那里还有羊字辈字样，为什么？要修正，
+  //     我都说了你也验证了，最新建立羊字辈是在11月18日」。
+  //   ⇒ 在这里（前五事实的唯一产出口）按【该日】的临时题材隔离表剔除，下游 字辈线 / 退潮题材 /
+  //     老题材 / 新题材 一次收敛；⛔ 不动 stock_topics / note（只不把非生效日的临时词算成题材）。
+  const _hiddenToks = getHiddenTopicTokensForDate(date);
   const _libTopicOf = function(name) {
     try {
       const set = lookupTopicsByName(name);
@@ -1010,6 +1023,7 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
         if (!c) return;
         if (/^题材\d+$/.test(c)) return;      // 「题材30」这类占位编号不是真题材
         if (c.length < 2) return;             // 单字符不是题材（§10 从紧）
+        if (_hiddenToks.has(c.toLowerCase())) return;   // ★ 非生效日的临时词：不算题材（见上）
         if (all.indexOf(c) < 0) all.push(c);
       });
       if (all.length === 0) return '';
@@ -1086,7 +1100,41 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
       : ((Array.isArray(range20Wide) && range20Wide.length > 0) ? range20Wide : range20Top),
     0
   );
-  if (top.length === 0) return none;
+  // ★★ [RULE-35 2026-11-18 用户口径] 第三十五条【30日涨幅抱团】的候选池。
+  //   与上面三份共用同一份 `_enrich`（题材 / 龙位 / 一字 / 停牌 / 是否主板都只有一处实现，§6），
+  //   唯一差别：名次字段写 `rank30`（⛔ 不覆盖 `rank20` —— 两条规则各用各的名次）。
+  //   入参 `range30Top` 已由 `tvrb-auction-board30.js` 排好（只主板 + 30日涨幅降序 + 9:26 竞价口径）。
+  //   ⚠️ 不截断（cap=0）：第三十五条只需要前三，但"前三"由规则层用 `TOP30_HUDDLE_TOP_N` 切，
+  //      ⛔ 不在数据层写死一个 3（两处数字会各自漂移）。
+  //   §10：空 ⇒ 判不出（规则层据此不接管并如实标注，⛔ 不猜）。
+  const top30 = (function() {
+    const src = Array.isArray(range30Top) ? range30Top : null;
+    if (!src) return [];
+    const arr = [];
+    const seen = new Set();
+    src.forEach(function(t, i) {
+      if (!t || !t.stock) return;
+      const name = String(t.stock).trim();
+      if (!name || seen.has(name)) return;
+      seen.add(name);
+      const pct = Number(t.pct);
+      if (t.pct === null || t.pct === undefined || !isFinite(pct)) return;   // §10 无值不参排
+      const e = _enrich(t, i);
+      // ⚠️ `_enrich` 会把 `rank20` 填成「传进来的下标 +1」—— 在这条链上那个下标是 **30日** 的名次，
+      //   留着它等于给未来的人埋一颗雷（`top30[0].rank20 === 1` 会被误读成「20日涨幅第 1 名」）。
+      //   ⇒ 显式清空，只留 `rank30`。要 20 日名次请读 `top5` / `topicPool`（§6 各榜各的名次）。
+      e.rank20 = null;
+      e.rank30 = i + 1;
+      arr.push(e);
+    });
+    return arr;
+  })();
+  if (top.length === 0) {
+    // ★★ [RULE-35 2026-11-18] 20日榜没就绪 ⇒ 退潮 / 分歧 / 三十 / 三十一 那批规则全部不生效，
+    //   但【30日榜可能已经就绪】—— 第三十五条用的是另一把尺子，不该被 20 日榜拖死。
+    //   ⇒ 把这个池子带出去（`ready:false` 不变，其余事实仍是缺省值，⛔ 不让退潮规则复活）。
+    return Object.assign({}, none, { top30: top30 });
+  }
   const head = top[0];
   // 总龙 = 20日涨幅第一（全市场，含创业板 —— 与「20日涨幅」toggle 的总龙一同一只），
   //   并把【它今天】的龙位 / 一字一并带上：规则层判「占比不达标」要按龙头门槛（龙位=1 时）取档。
@@ -1299,6 +1347,14 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
     // ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 20日涨幅【前十】富化结果 —— 退潮判定的
     //   「主线题材 ≥3 只同题材」计数用（规则层 classifyMainTopic）。⚠️ 与 top5 同一份富化，只是更长。
     topicPool: topicPool,
+    // ★★ [RULE-35 2026-11-18 用户口径] 30日涨幅（**9:26 竞价口径** · 只主板）全量降序富化 ——
+    //   第三十五条【30日涨幅抱团】的**唯一**候选池。
+    //   ⚠️ 与 top5 / topicPool 共用同一份 `_enrich`（题材解析只有这一处，§6），
+    //      但名次字段是 `rank30`（⛔ 不覆盖 rank20 —— 两把尺子各自的第 N 名）。
+    //   ⚠️ 它【恒可用性与 20 日榜无关】：两条规则尺子不同，20日榜没就绪不该把 35 一起拖死
+    //      （见上面 `if (top.length === 0)` 那段的 Object.assign 出口）。
+    //   ⚠️ 缺省 `[]` = 判不出（§10）；⛔ 绝不返回一份「今天没有 30 日龙头」的假结论。
+    top30: top30,
     // ★★ [EBB-STREAK 2026-10-25 用户口径] 总龙连板天数（null = 无从判定，见上面事实⑥）
     leaderStreak: leaderStreakInfo ? leaderStreakInfo.n : null,
     leaderStreakLabel: leaderStreakInfo ? leaderStreakInfo.label : ''
@@ -1582,7 +1638,7 @@ export function collectDecisionData(date, opts) {
       //     由调用方（组合式）ensureRange20Leaders 后注入；缺省 ⇒ ebbCtx.ready=false，退潮规则不生效（§10）。
       out.ebbCtx = _ebbCtxOf(rows, topics, dragonMap, date,
         opts && opts.prevRangeMap, rangeMap, prevDate, opts && opts.range20Top,
-        opts && opts.range20Wide, opts && opts.range20Top10);
+        opts && opts.range20Wide, opts && opts.range20Top10, opts && opts.range30Top);
     }
     // ★★ [SUSPEND-NOBUY 2026-10-14 用户口径] 买点侧「买不进名单」= 连续停牌第 2 天及以上的票。
     //   放在本出口的【公共段】（⛔ 不在上面 topicActionContext 分支里）：这份名单只依赖
@@ -1843,7 +1899,7 @@ export function collectDragonRankMap(date, opts) {
  *
  * @param {string} date 展示日 YYYY-MM-DD
  * @param {{mode?:string, actionContext?:boolean, prevRangeMap?:Map, rangeMap?:Map, range20Top?:Array,
- *          range20Wide?:Array, range20Top10?:Array}} [opts] mode = 题材组序口径
+ *          range20Wide?:Array, range20Top10?:Array, range30Top?:Array}} [opts] mode = 题材组序口径
  *        （「题材量比」看板传 MODE_VOL_RATIO；缺省回落 MODE_VOL_RATIO —— 见 normalizeDecisionMode）；
  *        actionContext 见上（缺省 false ⇒ 与原行为逐字一致）；
  *        prevRangeMap 见上（缺省 ⇒ 退潮首日规则不生效，§10 ⛔ 不退化成「今天没有总龙」）；
@@ -1886,6 +1942,21 @@ export function collectDecisionTopics(date, opts) {
     //   只给退潮判定的「主线题材 ≥3 只同题材」计数（classifyMainTopic）。
     //   缺省 ⇒ 退回 range20Wide → range20Top（见 _ebbCtxOf），§11：老调用方不传时行为不变。
     range20Top10: (opts && opts.range20Top10) || null,
+    // ★★ [RULE-35-FORWARD 2026-11-19 用户报障 · 决定性真因] 30日涨幅（9:26 竞价口径 · 只主板）全量降序 ——
+    //   第三十五条【30日涨幅抱团】的【唯一】候选池。
+    //
+    //   🔴 这一行漏了整整两轮报障（11-17 / 11-18 一直显示第三十一条的补涨票，用户连刷数次都不变）：
+    //      `collectDecisionData` 的签名、`_ebbCtxOf` 的第 11 参、组合式的注入【全都写好了】，
+    //      偏偏本函数把 opts 重排成显式字面量时**没有把它带过去** ⇒ 下游恒收到 undefined
+    //      ⇒ `ebbCtx.top30` 恒为 [] ⇒ 规则层永远走「判不出」那条分支（不接管），
+    //      而 20 日那几个参数（range20Top / Wide / Top10）都在这个字面量里 ——
+    //      这正是用户那句「是不是只是认可了20日的，30日的根本没生效」的实指（原话）。
+    //   ⚠️ 它的症状极像缓存 / 部署问题：30 日榜本身算得好好的（真机实测 ready=true / rank 69 /
+    //      九阳股份 148.76%），诊断串还是空串（有票时故意留空），于是屏幕上只有一句「判不出」，
+    //      连「为什么」都没有 —— §10 的失败可分辨在这里被「参数没转发」吃掉了。
+    //   ⛔ 以后往 `collectDecisionData` 加任何新入参，必须【同时】在这个字面量里加一份
+    //      （单测 decision-collect-forward.test.js 静态守着这一条）。
+    range30Top: (opts && opts.range30Top) || null,
     // ★★ [SELL-AUTO 2026-11-12 用户口径] 前一交易日【买点侧】的股票名（`collectBuyNames(昨日 plan)` 产出）——
     //   卖点侧成员的主力来源：用户早上按买点侧买进去，次日自动进卖点侧，不用逐只补打「买入」标签。
     //   ⚠️ 由调用方按 prevDate 从 `tvrb_plan_snapshot` 读回后注入（§4：拿数据的只管拿，本文件不读云）。

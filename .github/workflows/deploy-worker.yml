@@ -38,6 +38,9 @@ on:
     paths:
       - 'workers/bidding-auto-fetch/**'
       - 'src/logic/auction/range-window.js'          # worker 直接 import 的纯函数（跨目录引用）
+      # [R30-CLOUD 2026-11-20] 30 日涨幅数学（窗口 / 一次性比值 / 停牌等价）由 Worker 直接 import。
+      #   ⛔ 不列进 paths ⇒ 改了口径却不会重新部署 Worker，线上继续用旧算法（假绿）。
+      - 'src/logic/auction/range30-math.js'
       # [BIDDING-CLOSE-CLOUD 2026-11-07] worker 16:00 收盘列落库直接 import 这份共享口径。
       #   ⛔ 不列进 paths ⇒ 改了取值口径却不会重新部署 Worker，线上继续用旧算法（又一例假绿）。
       - 'src/logic/bidding/snapshot-spec.js'

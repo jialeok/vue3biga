@@ -15,9 +15,27 @@ on:
   workflow_dispatch:
     inputs:
       point:
-        description: 'point: jiwang | closepost | ladder26 | range20 | extras | morning | close | snapshot | ladder'
+        description: 'point: jiwang | closepost | ladder26 | range20 | range30 | r30backfill | extras | morning | close | snapshot | ladder'
         required: true
         default: 'jiwang'
+      stocks:
+        # ★★ [R30-METRICS-HEAL 2026-11-23] 只给 r30backfill 用：逗号分隔的股票名，
+        #   只补这几只（留空 = 前一交易日 30 日榜前 50 ∪ 20 日榜前 25）。
+        #   场景：用户当场指着某两只票说「今天能补吗」⇒ 不必等整批。
+        description: '可选（仅 r30backfill）：只补这些股票名，逗号分隔，如 百洋股份,慈文传媒'
+        required: false
+        default: ''
+      dates:
+        # ★★ [LEGS/R30-CLOUD 2026-11-20] 历史日批量回补：逗号分隔的 YYYY-MM-DD。
+        #   每次【单独一次 Worker invocation】(各有 50 次 subrequest 配额)，⛔ 不在本机跑。
+        #   例：2026-11-17,2026-11-18,2026-11-19,2026-11-20
+        description: '可选：历史日列表（逗号分隔），逐日逐点回补，留空=只跑今天'
+        required: false
+        default: ''
+      endAtDate:
+        description: '历史回补 30 日涨幅时：1=窗口末日取指定日当天（收盘口径，推荐）'
+        required: false
+        default: ''
       confirm:
         description: '填 YES 才会真正执行'
         required: true
@@ -48,30 +66,52 @@ jobs:
           TOKEN: ${{ secrets.WORKER_FETCH_TOKEN }}
           POINT: ${{ inputs.point }}
           OVERWRITE: ${{ inputs.overwrite }}
+          DATES: ${{ inputs.dates }}
+          ENDATDATE: ${{ inputs.endAtDate }}
+          STOCKS: ${{ inputs.stocks }}
         run: |
           set -euo pipefail
           if [ -z "$TOKEN" ]; then
             echo "::error::仓库 Secret WORKER_FETCH_TOKEN 未设置"
             exit 1
           fi
-          URL="https://bidding-auto-fetch.cctopid.workers.dev/fetch?point=${POINT}&token=${TOKEN}"
-          if [ "${OVERWRITE}" = "1" ]; then
-            URL="${URL}&overwrite=1"
-            echo "⚠️ overwrite=1：本次允许覆盖已有非空收盘值"
-          fi
-          echo "触发 ${POINT}"
-          code="$(curl -sS -o /tmp/worker-resp.json -w '%{http_code}' --max-time 180 "$URL")"
-          echo "HTTP ${code}"
-          cat /tmp/worker-resp.json
-          echo
-          if [ "$code" != "200" ]; then
-            echo "::error::Worker 返回非 200 ⇒ 视为失败，不允许假绿"
-            exit 1
-          fi
-          node -e '
-            const fs = require("fs");
-            const j = JSON.parse(fs.readFileSync("/tmp/worker-resp.json", "utf8"));
-            if (j.ok !== true) { console.error("Worker 业务失败: " + JSON.stringify(j)); process.exit(1); }
-            console.log("Worker 业务成功: written=" + (j.written ?? "n/a"));
-            (j.logs || []).forEach(l => console.log("  " + l));
-          '
+          # 每个 (point, date) 各发一次 HTTP ⇒ 每次都是独立 Worker invocation、独立 50 次配额。
+          # ⛔ 不能把多天塞进一次请求：Cloudflare 单次 invocation 的 subrequest 上限会把它们全废掉。
+          IFS=',' read -ra DAY_LIST <<< "${DATES:-today}"
+          for D in "${DAY_LIST[@]}"; do
+            D="$(echo "$D" | xargs)"
+            URL="https://bidding-auto-fetch.cctopid.workers.dev/fetch?point=${POINT}&token=${TOKEN}"
+            # ★★ [R30-METRICS-HEAL 2026-11-23] 只补指定票时带上 stocks（URL 编码由 curl --get --data-urlencode 不好拼接，
+            #   这里直接对中文名做 percent-encode，避免空格/中文把 query 打断）
+            if [ -n "${STOCKS:-}" ] && [ "${POINT}" = "r30backfill" ]; then
+              ENC="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$STOCKS")"
+              URL="${URL}&stocks=${ENC}"
+            fi
+            if [ "$D" != "today" ]; then
+              URL="${URL}&date=${D}"
+              echo "=== ${POINT} 历史回补 ${D} ==="
+              case "${POINT}" in
+                range30) URL="${URL}&overwrite=1&endAtDate=${ENDATDATE:-1}" ;;
+                range20) URL="${URL}&overwrite=1" ;;
+              esac
+            else
+              echo "=== ${POINT} 当天 ==="
+              if [ "${OVERWRITE}" = "1" ]; then URL="${URL}&overwrite=1"; fi
+            fi
+            echo "触发 ${URL%%&token=*}…"
+            code="$(curl -sS -o /tmp/worker-resp.json -w '%{http_code}' --max-time 180 "$URL")"
+            echo "HTTP ${code}"
+            cat /tmp/worker-resp.json
+            echo
+            if [ "$code" != "200" ]; then
+              echo "::error::Worker 返回非 200 ⇒ 视为失败，不允许假绿"
+              exit 1
+            fi
+            node -e '
+              const fs = require("fs");
+              const j = JSON.parse(fs.readFileSync("/tmp/worker-resp.json", "utf8"));
+              if (j.ok !== true) { console.error("Worker 业务失败: " + JSON.stringify(j)); process.exit(1); }
+              console.log("Worker 业务成功: written=" + (j.written ?? "n/a"));
+              (j.logs || []).forEach(l => console.log("  " + l));
+            '
+          done

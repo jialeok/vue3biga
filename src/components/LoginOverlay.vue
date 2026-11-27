@@ -73,7 +73,7 @@ import { pullFromCloud } from '../logic/workflows/auction-sync.js';
 import { initApp } from '../logic/app-core.js';
 import { pullDailyHighlights } from '../data/daily-highlights.js';
 import { _emit } from '../stores/eventBus.js';
-import { loadCloudTopics, buildTopicCache, invalidateTopicCache } from '../data/stock-topics.js';
+import { loadCloudTopics, rebuildTopicCacheForHotData } from '../data/stock-topics.js';
 import { loadCloudStockCodeMap } from '../data/stock-code-map.js';
 import { pullHotStocksHighlights, migrateHotStocksShadowToMetrics, loadHotStocksFromCloud, migrateHotStocksToTrendsTable, migrateHotTrendsToMarketMetrics, loadHotTrendsFromCloud } from '../data/hot-stocks.js';
 import { clearPushDebounceTimer } from '../logic/session/helpers.js';
@@ -168,8 +168,10 @@ async function checkPassword() {
   const pTopics = loadCloudTopics().catch(() => {});
   const pCodeMap = loadCloudStockCodeMap().catch(() => {});
   Promise.all([pHotShadow, pHotTrends, pHotHi, pTopics, pCodeMap]).then(() => {
-    invalidateTopicCache();
-    buildTopicCache();
+    // ★★ [HOT-TOPIC-SYNC 2026-11-25] 手动登录路径与刷新 / Realtime 统一走 Data 层入口
+    //   （§6）：这条 Promise.all 已等齐 loadHotStocksFromCloud + loadCloudTopics，是题材源
+    //   最全的时刻，重建后置位 hot 就绪标志，买点门控第⑱项才放行。
+    rebuildTopicCacheForHotData();
     _emit('auction-refresh');
   });
 }

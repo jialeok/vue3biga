@@ -232,7 +232,10 @@ function _dragonMap(names) {
 
 describe('buildTopicVolRatioPlan · dataGateBlocked=true 时买点侧必须清空', function() {
   const names = ['甲', '乙', '丙', '丁', '戊'];
-  const topics = [_block('AI应用', 1, names.map(function(n) { return _member(n); }))];
+  // ★★ [BUYABLE-COUNT 2026-11-19] 量比给 30（≥ 25）⇒ 这是【普通买点日】。
+  //   原来给 5 ⇒ 触发第十九条空仓提醒 ⇒ 每行都被改写成【分歧日不买】，
+  //   按新口径（「选股 N 只」只数今天能下单的）pickCount 恒 0，夹具就证明不了「本来能选出票」。
+  const topics = [_block('AI应用', 1, names.map(function(n) { return _member(n, { aucVolRatio: 30 }); }))];
   const dm = _dragonMap(names);
   const off = buildTopicVolRatioPlan(topics, dm, { date: D });
   const on = buildTopicVolRatioPlan(topics, dm, { date: D, dataGateBlocked: true });

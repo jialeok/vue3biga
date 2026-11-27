@@ -10,7 +10,12 @@
 //     · 窗口首日需要「上一交易日收盘价」→ 起始必须早于窗口首日；
 //     · 覆盖不足要重试（上游并发下会返回被截断的少数 K 线）。
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { fetchFuyaoKlineWindowPct, isRetriableFuyaoError } from './fuyao-api.js';
+import {
+  fetchFuyaoKlineWindowPct,
+  fetchFuyaoBatchBars,
+  barsToDailyPctMap,
+  isRetriableFuyaoError
+} from './fuyao-api.js';
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -168,5 +173,95 @@ describe('isRetriableFuyaoError — 业务性错误绝不重试', () => {
       'fuyao-proxy /api/x HTTP 401: unauthorized',
       'fuyao /api/x 错误: 非交易日无数据'
     ].forEach(msg => expect(isRetriableFuyaoError(msg), String(msg)).toBe(false));
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// [LEGS-FILL-CLOUD 2026-11-20] 20/30 日涨幅「新面孔整列空白」的根因修复回归锁。
+//   病根：逐日腿表只覆盖进过名单的票，新面孔只有 2~4 根腿 ⇒ 19 根门槛永远过不了。
+//   修法：云端用同花顺【批量】前复权日线补腿（10 只/批），本组测试钉死换算口径与配额。
+// ════════════════════════════════════════════════════════════════════════════════
+describe('barsToDailyPctMap — K 线 → 逐日涨幅（新面孔补腿的唯一口径）', () => {
+  it('用「上一根 bar」做基准，不是日历前一天（停牌期间前收盘不变的交易所口径）', () => {
+    const m = barsToDailyPctMap([
+      { ymd: '2026-11-16', close: 100 },
+      { ymd: '2026-11-17', close: 101 },
+      { ymd: '2026-11-19', close: 102.01 },   // 11-18 停牌，跨一天仍是 +1%
+      { ymd: '2026-11-20', close: 99.9698 }
+    ]);
+    expect(m.get('2026-11-17')).toBeCloseTo(1, 6);
+    expect(m.get('2026-11-19')).toBeCloseTo(1, 6);
+    expect(m.get('2026-11-20')).toBeCloseTo(-2, 6);
+  });
+
+  it('第一根 bar 不产出（§10 没有前收盘，⛔ 不拿 0 当基准）', () => {
+    const m = barsToDailyPctMap([{ ymd: '2026-11-20', close: 10 }]);
+    expect(m.size).toBe(0);
+  });
+
+  it('坏值（close<=0 / NaN / 缺日期）跳过，且不会污染后一根', () => {
+    const m = barsToDailyPctMap([
+      { ymd: '2026-11-17', close: 100 },
+      { ymd: '2026-11-18', close: 0 },
+      { ymd: '2026-11-19', close: 110 }
+    ]);
+    expect(m.has('2026-11-18')).toBe(false);
+    expect(m.get('2026-11-19')).toBeCloseTo(10, 6);
+  });
+
+  it('空输入返回空 Map，不抛错', () => {
+    expect(barsToDailyPctMap(null).size).toBe(0);
+    expect(barsToDailyPctMap([]).size).toBe(0);
+  });
+});
+
+describe('fetchFuyaoBatchBars — 10 只/批 + 前复权 + ymd 带横线', () => {
+  it('★ 33 只只发 4 次请求（⛔ 逐只发会把 Cloudflare 50 次配额打穿）', async () => {
+    const calls = [];
+    globalThis.fetch = async (url) => {
+      calls.push(String(url));
+      const u = new URL(String(url));
+      const list = String(u.searchParams.get('thscodes') || '').split(',');
+      return {
+        ok: true,
+        json: () => Promise.resolve({
+          code: 0,
+          data: {
+            item: list.map(t => ({
+              thscode: t,
+              item: [{ date_ms: Date.parse('2026-11-20T00:00:00+08:00'), close_price: '12.34' }]
+            }))
+          }
+        })
+      };
+    };
+    const codes = new Array(33).fill(0).map((_, i) => String(600000 + i));
+    const map = await fetchFuyaoBatchBars(ENV, codes, '2026-10-01', '2026-11-20');
+    expect(calls).toHaveLength(4);
+    expect(map.size).toBe(33);
+    expect(map.get('600000')[0]).toEqual({ ymd: '2026-11-20', close: 12.34 });
+    const u = new URL(calls[0]);
+    expect(u.searchParams.get('adjust')).toBe('forward');   // 前复权，⛔ 不复权
+  });
+
+  it('★ 单批失败不连坐：其它批照常返回，坏代码被过滤', async () => {
+    let n = 0;
+    globalThis.fetch = async () => {
+      n++;
+      if (n === 1) return { ok: false, status: 429, text: () => Promise.resolve('rate limit') };
+      return {
+        ok: true,
+        json: () => Promise.resolve({
+          code: 0,
+          data: { item: [{ thscode: '600010.SH', item: [
+            { date_ms: Date.parse('2026-11-20T00:00:00+08:00'), close_price: '9.99' }
+          ] }] }
+        })
+      };
+    };
+    const codes = new Array(12).fill(0).map((_, i) => String(600000 + i));
+    const map = await fetchFuyaoBatchBars(ENV, codes, '2026-10-01', '2026-11-20');
+    expect(map.size).toBeGreaterThan(0);   // 第 2 批成功
+    expect(map.get('600010')).toBeDefined();
   });
 });

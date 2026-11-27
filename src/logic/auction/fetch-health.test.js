@@ -25,9 +25,13 @@ import { isTradingDay } from '../date/trading-day-helpers.js';
 import { state } from '../app-state.js';
 
 /** 造一份「名单已到」的内存缓存 */
-function seedRows(n) {
+function seedRows(n, withYest) {
   const rows = [];
-  for (let i = 0; i < n; i++) rows.push({ stock: '票' + i, code: '60000' + i });
+  for (let i = 0; i < n; i++) rows.push({
+    stock: '票' + i,
+    code: '60000' + i,
+    yestVolume: withYest === false ? '' : '8888',   // [YEST-COL] 默认带昨量，测昨量缺失显式传 false
+  });
   state._auctionMemCache = { [TODAY]: rows };
 }
 
@@ -114,11 +118,32 @@ describe('diagnoseTodayAuction — 什么时候该提示 / 不该提示', () => 
     expect(r.need).toBe(false);
   });
 
-  it('行情已经到齐 ⇒ 不提示', async () => {
+  it('行情已经到齐（含昨成交量）⇒ 不提示', async () => {
     seedRows(50);
     _todayDataArrived.mockReturnValue(true);
     const r = await diagnoseTodayAuction(TODAY);
     expect(r.need).toBe(false);
+  });
+
+  // ★★ [YEST-COL 2026-11-19] 主字段到齐但昨量整列缺失 ⇒ 必须给提示，
+  //   否则「用同花顺补今日」按钮不出现，用户没有入口走 K 线腿补昨量（0 猫抓额度）。
+  it('★★ 竞价量到了但昨成交量整列缺失 ⇒ 提示补昨量（不动竞价量比红线）', async () => {
+    seedRows(50, false);
+    _todayDataArrived.mockReturnValue(true);
+    const r = await diagnoseTodayAuction(TODAY);
+    expect(r.need).toBe(true);
+    expect(r.level).toBe('info');
+    expect(r.title).toContain('昨日成交量');
+    expect(r.text).toContain('0 猫抓额度');
+    expect(r.text).toContain('竞价量比仍只认猫抓');
+  });
+
+  it('★★ 昨量覆盖率 ≥30%（个别票天然没有）⇒ 不提示（§11 默认无行为）', async () => {
+    seedRows(50);
+    const rows = state._auctionMemCache[TODAY];
+    rows.forEach(function(r, i) { if (i >= 20) r.yestVolume = ''; }); // 30/50 = 60%
+    _todayDataArrived.mockReturnValue(true);
+    expect((await diagnoseTodayAuction(TODAY)).need).toBe(false);
   });
 });
 

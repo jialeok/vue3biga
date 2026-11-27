@@ -23,7 +23,7 @@
 //   · §10：读名单 / 读库 / 写库 任一步失败都向上抛，绝不伪装成"已补好"。
 //   · §32：模块级单飞，连点只跑一次；不自动触发，只能由用户按钮调用。
 import { readAuctionRoster, readAuctionMetrics, upsertAuctionMetrics, AUCTION_SCOPE } from '../../data/auction-metrics-patch.js';
-import { fetchDailyPctRange } from '../../data/daily-pct-range.js';
+import { fetchFuyaoDailyPctForPatch } from '../../data/daily-pct-range.js';
 import { fuyaoApiGet, tickerToThscode } from '../../data/api/fuyao-proxy.js';
 import { computeKlineDayPatch } from './trend-patch.js';
 import { beijingTodayStr } from './auction-pull-window.js';
@@ -324,13 +324,10 @@ export async function patchTodayAuctionFromThs(date, opts) {
       return { ok: false, date: d, roster: 0, patchedRows: 0, filled: _emptyFilled(), reason: '当天名单为空', logs: logs };
     }
     // 只有 6 位代码的才能查上游（§40 不猜代码）
-    const targets = roster
+    let targets = roster
       .map(function(r) { return { stock: String(r.stock || '').trim(), code: String(r.code || '').trim() }; })
       .filter(function(t) { return t.stock && /^\d{6}$/.test(t.code); });
     log('展示名单 ' + roster.length + ' 只，其中带 6 位代码 ' + targets.length + ' 只');
-    if (targets.length === 0) {
-      return { ok: false, date: d, roster: roster.length, patchedRows: 0, filled: _emptyFilled(), reason: '名单没有可用代码', logs: logs };
-    }
 
     // ② 库里现状 —— 决定"哪些字段还空着"
     const existing = await readAuctionMetrics(d);
@@ -341,25 +338,54 @@ export async function patchTodayAuctionFromThs(date, opts) {
     });
     log('库内已有 ' + existing.length + ' 行（缺字段的会被补，已有的绝不覆盖）');
 
+    // ★ [METRICS-SHELL 2026-11-19] 龙位组 / 20天补 / 30天补的注入行有一部分**不在**展示名单里，
+    //   但它们确实显示在第一页，而且代码只存在于 market_metrics（不是 auction_watchlist）。
+    //   11-19 线上实测：38 行 metrics 里 7 只这类行被漏掉 ⇒ 补完 31 行后页面仍有 6 行 '-'。
+    //   这里把「今日 metrics 里有 6 位代码的行」并入补数目标（§6：正式名单真相仍是 watchlist；
+    //   这里只是把「会显示出来的行」补全，不新增 watchlist 成员，也绝不覆盖已有值）。
+    const rosterNames = new Set();
+    roster.forEach(function(r) { rosterNames.add(String((r && r.stock) || '').trim()); });
+    let shellAdded = 0;
+    existing.forEach(function(r) {
+      const nm = String((r && r.stock) || '').trim();
+      const code = String((r && r.code) || '').trim();
+      if (!nm || !/^\d{6}$/.test(code) || rosterNames.has(nm)) return;
+      rosterNames.add(nm);
+      roster.push({ stock: nm, code: code });
+      shellAdded++;
+    });
+    if (shellAdded > 0) {
+      targets = roster
+        .map(function(r) { return { stock: String(r.stock || '').trim(), code: String(r.code || '').trim() }; })
+        .filter(function(t) { return t.stock && /^\d{6}$/.test(t.code); });
+      log('并入今日 metrics 里的注入行 ' + shellAdded + ' 只（龙位/补位壳行，只填空不改名单）');
+    }
+    if (targets.length === 0) {
+      return { ok: false, date: d, roster: roster.length, patchedRows: 0, filled: _emptyFilled(), reason: '名单没有可用代码', logs: logs };
+    }
+
     // ③ K 线腿：涨幅 / 开盘涨幅(竞价) / 昨日成交量 —— 一次请求三样，0 猫抓额度
     //    ★ [VOL-COVER 2026-11-05] `onlyVolume` 时【整条跳过】：自动补只关心竞价量，
     //      而 K 线腿是「每只票一次上游请求」的重活 —— 竞价时段每秒都在刷，⛔ 不许把它带进自动路径。
     const openOut = new Map();
     const volOut = new Map();
     let pctMap = null;
+    let klineFailed = false;
+    let snapFailed = false;
     if (o.onlyVolume) {
       report('kline', targets.length, targets.length);
       log('只补竞价量模式：跳过 K 线腿（涨幅/昨量本次不动）');
     } else {
       report('kline', 0, targets.length);
       try {
-        pctMap = await fetchDailyPctRange(
+        pctMap = await fetchFuyaoDailyPctForPatch(
           targets,
           [d],
           { requestTimeoutMs: o.requestTimeoutMs || 20000, openOut: openOut, volOut: volOut }
         );
       } catch (e) {
         // §10：K 线腿失败只降级这一腿（快照腿照走），但不伪装成"没有数据"
+        klineFailed = true;
         log('❌ K 线腿失败（涨幅/竞价涨幅/昨量本次补不上）: ' + (e && e.message || e));
       }
     }
@@ -393,6 +419,7 @@ export async function patchTodayAuctionFromThs(date, opts) {
         log('快照命中 ' + snapByName.size + '/' + targets.length + ' 只（data_status=final，服务端日 ' + snapYmd + '）');
       }
     } catch (e) {
+      snapFailed = true;
       log('❌ 快照腿失败（竞价量/换手本次补不上）: ' + (e && e.message || e));
     }
 
@@ -400,6 +427,13 @@ export async function patchTodayAuctionFromThs(date, opts) {
     const ymd = d.replace(/-/g, '');
     const rows = [];
     const filled = _emptyFilled();
+    // ★ [UPSTREAM-MISS 2026-11-19] 「没有字段可写」有两种完全不同的语义，⛔ 不许混为一谈：
+    //   ① 库里这些字段本来就有值 ⇒ 真的已完整；
+    //   ② 库里是空的、上游（K线腿/快照腿）也没返回 ⇒ 上游失败，必须报出来（§10）。
+    //   11-19 现场就是 ② 被当成 ①：31 票 K 线腿全挂，却回报「已完整，无需补写」，
+    //   用户点了按钮没有任何提示，昨量列一直 '-'。
+    const unresolved = new Set();
+    const klineScope = !o.onlyVolume;
     targets.forEach(function(t) {
       const cur = byStock.get(t.stock) || null;
       const keep = pctMap ? pctMap.get(t.stock) : null;
@@ -423,6 +457,7 @@ export async function patchTodayAuctionFromThs(date, opts) {
       if (!cur || _isEmpty(cur.change_pct)) {
         const v = fmtPct(k.changePct);
         if (v !== null) { row.change_pct = v; filled.pct++; }
+        else if (klineScope) unresolved.add('涨幅');
       }
       // 竞价涨幅：快照终态值优先（K线 open 换算是兜底）
       if (!cur || _isEmpty(cur.auc_pct_chg)) {
@@ -430,11 +465,13 @@ export async function patchTodayAuctionFromThs(date, opts) {
           ? Number(snap.auction_pct) : null;
         const v = fmtPct(fromSnap !== null ? fromSnap : k.aucPctChg);
         if (v !== null) row.auc_pct_chg = v;
+        else unresolved.add('竞价涨幅');
       }
       // 昨日成交量（万股）
       if (!cur || _isEmpty(cur.yest_volume)) {
         const v = fmtIntVol(k.yestVolume);
         if (v !== null) row.yest_volume = v;
+        else if (klineScope) unresolved.add('昨成交量');
       }
       // 竞价量（手 → 万股）
       if (!cur || _isEmpty(cur.volume)) {
@@ -442,6 +479,7 @@ export async function patchTodayAuctionFromThs(date, opts) {
           ? Number(snap.auction_volume) / 100 : null;
         const v = fmtIntVol(raw);
         if (v !== null) { row.volume = v; filled.vol++; }
+        else unresolved.add('竞价量');
       }
       // ⛔⛔ 竞价量比（auc_vol_ratio）【绝对不许用同花顺补】—— 2026-10-26 用户口径：
       //   「早盘竞价看板的股票中的竞价量比统计不对吧，这个是同花顺统计不出来的，
@@ -469,6 +507,7 @@ export async function patchTodayAuctionFromThs(date, opts) {
           ? Number(snap.auction_turnover_pct) : null;
         const v = fmtRatio(raw);
         if (v !== null) { row.auc_turnover = v; filled.turnover++; }
+        else unresolved.add('换手率');
       }
 
       // 没有任何一个字段要补 ⇒ 不提交（省请求，也让"全部已完整"能被观察到）
@@ -480,6 +519,15 @@ export async function patchTodayAuctionFromThs(date, opts) {
 
     report('write', 0, rows.length);
     if (rows.length === 0) {
+      if (unresolved.size > 0) {
+        // §10：上游没给 ≠ 库里已完整。必须让 UI 看到「没补上」，否则用户点了按钮还在干等。
+        const why = [];
+        if (klineFailed) why.push('K线腿失败');
+        if (snapFailed) why.push('快照腿失败');
+        const reason = '上游未返回' + Array.from(unresolved).join('/') + (why.length ? '（' + why.join('、') + '）' : '');
+        log('⚠️ ' + reason + ' ⇒ 本次未写库（不把失败伪装成"已完整"）');
+        return { ok: false, date: d, roster: roster.length, patchedRows: 0, filled: filled, reason: reason, logs: logs };
+      }
       log('✅ 库内字段已完整，无需补写');
       return { ok: true, date: d, roster: roster.length, patchedRows: 0, filled: filled, reason: '已完整', logs: logs };
     }

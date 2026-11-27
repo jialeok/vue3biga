@@ -70,7 +70,8 @@ describe('auction-leg-ranges · 两套口径各自加载', function() {
         expect(isAuctionLegRangesLoaded('2026-10-23')).toBe(true);
         // ⛔ 十日里不该冒出二十日的票（两张表是两个数据源，混了就成假真相）
         expect(getAuctionLegRange10('2026-10-23').has('二十日票')).toBe(false);
-    });
+    // 全量串行时本机网络抖动会让这条含真实超时的用例从 2.7s 涨到 5s+ ⇒ 显式放宽测试超时（⛔ 不改生产等待逻辑）
+    }, 15000);
 
     it('★ 未加载 / 日期不匹配 ⇒ 两个 getter 都返回 null（⛔ 不返回空 Map 冒充「没有数据」）', async function() {
         expect(getAuctionLegRange10('2026-10-23')).toBeNull();

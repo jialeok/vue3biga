@@ -31,6 +31,15 @@ function expectedCrons() {
 // 本次上线必须能在【线上脚本】里看到的标识符。
 // ⛔ 只写本轮新增、且线上目前确实没有的项 —— 才能证明真的换了版本，而不是读到缓存旧脚本。
 const REQUIRED = [
+  // ★★ [LEGS/R30-CLOUD 2026-11-20] 本轮新增的四个硬证据（全是打包后仍在产物里的实体）：
+  //   函数名（被 index.js 调用，压缩不删）+ 日志前缀 / src 标记的字符串字面量。
+  //   ⛔ 不能用注释里的字：esbuild 会删注释，那样就证明不了线上真的换了版本。
+  'runRange30Fill',          // 30 日涨幅：Worker 9:26 填空 + 16:03 收盘覆盖
+  'fillLegsFromKline',       // 20 日涨幅：腿不足时用同花顺批量日线在云端补腿
+  '[legs-fill]',             // 补腿日志（可观测「新面孔为什么空白」）
+  '[r30-fill]',              // 30 日补位日志（可观测「Actions 漂移」后谁接了盘）
+  'fuyao_kline',             // 新腿来源标记（与 metrics_close / 本机 metrics 区分）
+  'historical-batch',        // 批量日线接口（10 只/批，0 配额打穿）
   'runLadderRecheck',       // 9:26 最近多板 883410 二次确认 + 猫抓补新进票
   'runRange20Prefill',      // 9:26 云端补 20 日涨幅（0 上游请求）
   'runDailyLegsHeal',       // 逐日腿云端补齐，替掉本机 08:00 定时任务
@@ -41,6 +50,11 @@ const REQUIRED = [
   'computeBiddingCloseValues', // 收盘取值口径：前端 / Worker 共用同一份纯函数
   'runJiwangCloseWrite',    // [2026-11-08] 昨收盘结果(跌:涨) 云端落库 + 10 日窗口回补
   'alignWindowTargets',     // 用真实交易日窗口推「下一交易日」，0 额外请求
+  // [JIWANG-MON 2026-11-23] 「每到周一三个字段全空」的两个缺陷修复证据：
+  //   ① pickWindowRows   —— 盘中(<15:05)的「今天」整行剔除，⛔ 不把盘中家数当收盘值写进明天；
+  //   ② skipIfTodayFilled —— 9:27 兜底轮前置判「今天已有值 ⇒ 0 次猫抓」，对象键压缩后仍在。
+  'pickWindowRows',
+  'skipIfTodayFilled',
   // [2026-11-10] 20 日涨幅逐日腿改 Range 分页（根治 limit=1000 静默截断 ⇒ 冰山冷热迟到）。
   // ⚠️ 它是 supabase-write.js 错误消息里的字符串字面量 ⇒ 打包/压缩后仍在线上脚本里，
   //    能硬证明这次真的换了版本（⛔ 别换成注释里的标记，注释会被 esbuild 删掉）。
@@ -114,6 +128,26 @@ const REQUIRED = [
   //      ⛔ 都不能换成注释里的标记（esbuild 会删注释）。
   'runPresenceRecompute',
   '[presence] ✅ 在列次数',
+  // [WL-CANDIDATES 2026-11-19] ladder26 名单扩到候选池全集：观察组成员走
+  //   _getAuctionFormalRowsForDate 的 obs 继承行进入候选，20/30 天补候选池量纲收敛为
+  //   RANGE20/30_WINDOW_DAYS（45/60 只用于取腿粗筛）。
+  //   ⚠️ 'extraCandidates' 是不被 mangle 的对象属性名（ladder-recheck.js 持久化字段），
+  //      打包后仍在产物里；⛔ 不能用注释标记断言（esbuild 会删注释）。
+  'extraCandidates',
+  // [R30-FETCH 2026-11-23 用户报障] 「30日强势补位的票五日趋势几乎空白、量比整列 '-'」的根因是
+  //   9:25 抓取名单里**从来没有 30 日榜**（只有 20 日榜）⇒ 补位票当天在 market_metrics 无行。
+  //   本轮把组B 扩到 6 路并让两条榜走同一个合并函数（mergeRankedStocksIntoConstituents）。
+  //   ⚠️ '[R30-FETCH]' 是 supabase-write.js#readRange30TopForDate 抛错消息里的字符串字面量、
+  //      'readRange30TopForDate' 是跨文件被 morning-workflow.js 调用的函数名 —— 打包压缩后都还在。
+  //      ⛔ 不能换成注释里的标记（esbuild 会删注释）。
+  'readRange30TopForDate',
+  '[R30-FETCH]',
+  // [R30-METRICS-HEAL 2026-11-23 用户口径「今天不能重补下30日强势补位票的数据吗？……能补吗？」]
+  //   补位票在历史日【整行都不存在】（百洋股份 11-17~11-20 零行），extras 只补已存在行的字段 ⇒
+  //   必须有一条能**新建行**的云端链路。point=r30backfill 走这里。
+  //   ⚠️ 函数名（被 index.js 跨文件调用，压缩不删）+ 日志字面量（⛔ 不能靠注释，esbuild 会删）。
+  'runInjectedMetricsBackfill',
+  '[r30backfill]',
   // [NARROW-RETRY 2026-11-28] 2026-11-27 事故：09:29 的重试返回【残响应】（只回当天一行 +
   //   缺 um_vol/open_bid_pct/auc_vol_ratio 三列），旧代码整体替换 items/fields ⇒ 当天竞价量比
   //   整列空白（0/65）⇒ 题材量比选股侧报错、当天没选出票，而日志只有一句 ℹ️。

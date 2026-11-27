@@ -308,8 +308,26 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     expect(resolvePlanSnapshotFreshness(broken, OPTS)).toBe('stale');
   });
 
-  it('版本常量已 bump 到 21（[ABN-TB] 第三十四条延伸「异动第三天同题材禁入」⇒ 历史日也要重算 = v21）', () => {
-    expect(TVRB_RULES_VERSION).toBe(21);
+  it('版本常量已 bump（[DEV-RULE-AUC-ONLY] 选股侧偏离一律竞价 ⇒ 11-24 华东重机解灰 ⇒ 历史日重算）', () => {
+    // ★★ [YIZI-NO-SHIFT 2026-11-20 用户口径] 竞价一字【照选 + 占一档】取代「顺延下一龙位」
+    //   ⇒ 选股结论会变（11-20 盛剑科技 / 兴欣新材就是这一条翻的）⇒ 历史日必须重算，版本 27 → 28。
+    // ★★ [DEV-RULE 2026-11-25 用户口径] 监管异动从「自定义十日涨幅 ＞ 97%」换成「官方严重异常波动」
+    //   ⇒ 异动日整体位移（11-12 → 11-11 等）⇒ 历史日必须按新口径重算覆盖，版本 28 → 29。
+    // ★★ [MARKET-DRAGON-ONLY / ROW-GRAY / HOT-TOPIC-SYNC] 29 → 30 → 31 → 32（各次选股结论变化）。
+    // ★★ [DEV-RULE-AUC-ONLY 2026-11-25 用户报障] 选股侧偏离值一律 9:25 竞价，历史日不再吃收盘
+    //   ⇒ 11-24 华东重机（收盘 near / 竞价 watch）解除灰化、回到买点侧 ⇒ 32 → 33。
+    // ★★ [CASE-1123-HAILI 2026-11-26] 第二十九条通道文案与判定一致化 + 在列次数门控只认真数据
+    //   （11-23 海立股份的说明从「按龙位」改成「题材内选票」）⇒ 存档文案变 ⇒ 33 → 34。
+    // ★★ [ABN-TB-MKTDRAGON 2026-11-26 用户口径] 第三十四条·延伸的 D-2 触发源收成【市龙一】
+    //   （11-24 北纬科技不是市龙一 ⇒ 不再触发「异动第三天」）⇒ 选股结论变 ⇒ 34 → 35。
+    // ★★ [TEMP-CORE-SCOPE 2026-11-27 用户报障] 前五事实化的题材串按该日隔离未生效的临时题材
+    //   （11-12 提示板不再出现 11-18 才建的「羊字辈」）⇒ 老题材 / 新题材结论变 ⇒ 35 → 36。
+    // ★★ [EBB-TOPIC-MEMBER 2026-11-27 用户口径] 第二十条买点侧分流：二次确认退潮的排除粒度从
+    //   【题材块】细化到【题材字段】（11-16 大消费 4 只 − 日出东方 = 3 只 < 4 ⇒ 大消费不入选）
+    // ★★ [EBB-TOPIC-TEMP 2026-11-27 用户口径] 二次确认退潮的禁买词集合 = 总龙原有题材 + 当日生效
+    //   且总龙自己也沾的临时题材词（11-16 日出东方灰化 + 【题材退潮不选】）⇒ 38 → 39。
+    //   ⇒ 选股结论变 ⇒ 36 → 37 → 38 → 39。
+    expect(TVRB_RULES_VERSION).toBe(47);
   });
 
   // ★★ [ABN-MAINBOARD-GUARD 2026-11-14] 第三十四条「全场十日涨幅最高票」只认主板。
@@ -317,58 +335,150 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
   //   像历史日期的10月28日，为什么把非主板的也考虑在里面呢……只有主板的才有这个条件。」
   //   配套约束：候选池【一行未改】仍是 883410 + 观察组 + 龙头组 + 20 日补位
   //   （用户明确否决过「收窄成 883410 名单」的提议：「不要乱改啊……不要画蛇添足。」）
-  it('[ABN-MAINBOARD-GUARD] 6 处异动取数全部带主板过滤，且过滤只按板块不按名单收窄', () => {
+  it('[ABN-MAINBOARD-GUARD] 三十四·b 的 D-2 触发源必须走 30 日榜（⛔ 不许再「十日涨幅挑最高票」）', () => {
     const plan = readFileSync('src/logic/topicvolratio/tvrb-plan.js', 'utf8');
-    const eligibleLine = 'makeAbnMainBoardFilter(isMainBoardRankEligible, getStockCode)';
-    // ① 工厂在规则层就位，且只依赖「板块资格 + 代码查询」两件事
-    expect(plan).toContain(eligibleLine);
+    // ① 工厂仍住在规则层（`tvrb-plan.js`）并对外导出 —— 判据唯一来源，⛔ 不许在视图里另写一份
     expect(plan).toContain('export function makeAbnMainBoardFilter');
-    // ② 规则层三处候选池一律走过滤后的 maxRangePctOf
-    expect(plan).toContain('maxRangePctOf(o.pctMap, _abnEligible)');
-    expect(plan).toContain('maxRangePctOf(o.prevAuctionLeg10, _abnEligible)');
-    expect(plan).toContain('maxRangePctOf(o.prevRange10, _abnEligible)');
-    // ③ 显示层总约束同样过滤（历史定稿日走另一条路，漏了就等于没改）
+    // ② ★★ [MARKET-DRAGON-ONLY 2026-11-25] 用点从「两个」收回到「一个」：
+    //   第三十四条的触发源已固定为市龙一（30 日榜本身只主板 ⇒ 结构性满足），
+    //   所以 **显示层兜底（abnormal-overlay）里不应再出现这层过滤** —— 出现就说明
+    //   有人把「扫全市场挑最高票」那套错口径又接了回来。
     const overlay = readFileSync('src/logic/topicvolratio/abnormal-overlay.js', 'utf8');
-    expect(overlay).toContain(eligibleLine);
-    expect(overlay).toContain('maxRangePctOf(x.todayMap, eligible)');
-    expect(overlay).toContain('maxRangePctOf(x.prevAucMap, eligible)');
-    expect(overlay).toContain('maxRangePctOf(x.prevCloseMap, eligible)');
-    // ④ ⛔ 不许把候选池收窄成「只有 883410 / 只有观察组」——用户点名禁止画蛇添足
+    // ⚠️ 断言必须锁【调用/导入形态】，⛔ 不能锁裸标识符：头注释里还会提到这两个名字
+    //   （记的是「为什么删掉」的历史），锁裸词会把一段正当注释判成违规 —— 本项目踩过这个坑。
+    expect(overlay).not.toContain('makeAbnMainBoardFilter(');
+    expect(overlay).not.toContain('pickRedLineSource(');
+    expect(overlay).not.toContain("import { resolveAbnormalFact, pickRedLineSource }");
+    // ③ ★★ [ABN-TB-MKTDRAGON 2026-11-26 用户口径] 三十四·b 的 D-2 触发源已收成【市龙一】：
+    //   必须复用 `buildTvrbAuctionBoard30`（9:26 竞价口径 30 日榜第 1 名·主板），
+    //   ⛔ 不许再从「D-2 十日涨幅 Map」里挑最高票 —— 那正是 11-24 北纬科技误触发的来源。
+    const board = readFileSync('src/composables/useTopicVolRatioBoard.js', 'utf8');
+    expect(board).toContain('buildTvrbAuctionBoard30(pair[0], pair[1])');
+    expect(board).not.toContain('maxRangePctOf(abnPrev2');
+    expect(board).not.toContain('makeAbnMainBoardFilter(');
+    expect(plan).toContain('export function maxRangePctOf');
+    // ④ ★★ [MARKET-DRAGON-ONLY 2026-11-25] 第三十四条的触发源：唯一 = 市龙一
+    //   （`ebbCtx.mktDragon1`，来自 30 日涨幅榜第 1 名·主板）。「从一批票里挑越线最严重那只」
+    //   的函数与它的依赖必须消失 —— 它们就是 11-24 误报全场空仓的直接来源。
+    const abn = readFileSync('src/logic/topicvolratio/abnormal-10d.js', 'utf8');
+    // ⚠️ 同样锁【调用/导入形态】，⛔ 不锁裸词（头注释里正当地提到这两个名字，记的是删除理由）
+    expect(abn).not.toContain('export function pickRedLineSource');
+    expect(abn).not.toContain('pickSevereDeviation(');
+    expect(abn).not.toContain('pickSevereDeviation }');
+    expect(abn).not.toContain('export function pickAbnormalSource');   // 旧「十日涨幅最高票」已废除
+    expect(abn).not.toContain('ABNORMAL_KIND_STOCK');                  // 「入选票异动」形态已删除
+    expect(plan).toContain('o.ebbCtx.mktDragon1');
+    // ⑤ ⛔ 不许把候选池收窄成「只有 883410 / 只有观察组」——用户点名禁止画蛇添足
     expect(plan).not.toContain('883410');
     expect(overlay).not.toContain('883410');
   });
 
-  // ★★ [CAP-97 2026-11-13 晚间] 阈值改动必须三件套同时落地，漏一件就等于没改：
-  //   ① 常量 97  ② 规则指纹 bump  ③ sw.js CACHE 换名。
-  it('[CAP-97-GUARD] 禁选上限 = 97，且规则指纹 / SW 缓存都已随阈值升级', async () => {
-    const { TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL } = await import('./tvrb-constants.js');
-    expect(TVRB_RANGE10_CAP).toBe(97);
-    expect(TVRB_RANGE10_ABNORMAL).toBe(100);
+  // ★★ [CAP-97-GUARD 2026-11-26 用户口径：旧自定义阈值彻底退役]
+  //   用户原话：「我今天都去掉自定义的设定95%了，怎么还提到自定义的监管异动，不是已经去除干净了吗？
+  //     现在都是以官方偏离值为准了……不需要保留之前自定义那个规则了。」
+  //   ⇒ 本用例从「常量仍在」【反向改成】「常量必须不存在」：
+  //     旧常量只要还留在仓库里，就会有人拿它写文案，进而被读成「现役禁选上限」——
+  //     本轮事故（界面上还在讲 97%）就是这么来的。⛔ 别再改回 toBe(97)。
+  it('[CAP-97-GUARD] 旧自定义阈值常量必须已删除 + 版本链未倒退', async () => {
+    const consts = await import('./tvrb-constants.js');
+    expect(consts.TVRB_RANGE10_CAP).toBeUndefined();
+    expect(consts.TVRB_RANGE10_ABNORMAL).toBeUndefined();
+    const raw = readFileSync('src/logic/topicvolratio/tvrb-constants.js', 'utf8');
+    expect(raw).not.toMatch(/export const TVRB_RANGE10_CAP/);
+    expect(raw).not.toMatch(/export const TVRB_RANGE10_ABNORMAL/);
     expect(TVRB_RULES_VERSION).toBeGreaterThanOrEqual(10);
     const sw = readFileSync('public/sw.js', 'utf8');
     expect(_swCacheNo(sw)).toBeGreaterThanOrEqual(67);   // [SW-CACHE] ≥ 本轮基线即可，⛔ 不用每轮改数字
   });
 
   // ★★ [FULL-MARKET-GUARD 2026-11-13 用户当场纠正] 整类护栏：
-  //   ＞97% 不许再被做成「票级顺延」，否则 11-13 那次「我理解错了」会原样复发。
-  it('[FULL-MARKET-GUARD] near 与 abnormal 后果相同：全场禁买判据 + 无票级顺延 + 手册口径', async () => {
-    const { isOverRange10Cap, resolveAbnormalFact } = await import('./abnormal-10d.js');
-    // ① 97~100 与 ≥100 都判【全场禁买】
-    expect(isOverRange10Cap(98)).toBe(true);
-    expect(isOverRange10Cap(101)).toBe(true);
-    expect(isOverRange10Cap(97)).toBe(false);
-    expect(resolveAbnormalFact({ leaderName: 'L', leaderPctToday: 98, leaderPctPrev: 70, rows: [] }).show).toBe(true);
-    // ② ⛔ 不许再有「跳过该龙位、顺延下一只」的票级实现
+  //   ＞红线 不许再被做成「票级顺延」，否则 11-13 那次「我理解错了」会原样复发。
+  //   ★★ [DEV-RULE 2026-11-25 口径整体替换] 判据从「十日涨幅 ＞ 97%」换成「官方严重异常波动」，
+  //     并新增一条同样重要的反向锁：**near（逼近红线）不许引发全场空仓** ——
+  //     用户原话：「不含「偏离放大（留意）」，因为这个不是很严重」。
+  it('[FULL-MARKET-GUARD] severe 才全场空仓、near 只禁这一只：判据 + 无票级顺延 + 手册口径', async () => {
+    const { isOverOfficialRedLine, isDeviationNearOrOver, resolveAbnormalFact } =
+      await import('./abnormal-10d.js');
+    // 夹具只造「档位」这一件事（阈值 → 档位的换算由 deviation-rule-facts.test.js 用真实
+    //   computeDeviation 锁），本用例锁的是【后果】。
+    const near = { ok: true, stage: 'near', dev10: 95.2, dev30: null };
+    const severe = { ok: true, stage: 'severe', dev10: 100.14, dev30: null };
+    const unknown = { ok: false, stage: 'unknown', dev10: null, dev30: null };
+    // ④ near ⇒ 只进第三十六条（这只票不买），不构成监管异动（⛔ 不空仓）
+    expect(isDeviationNearOrOver(near)).toBe(true);
+    expect(isOverOfficialRedLine(near)).toBe(false);
+    expect(resolveAbnormalFact({
+      leaderName: 'L', leaderDevToday: near, leaderDevPrev: near
+    }).show).toBe(false);
+    // ② severe 才构成监管异动 ⇒ 第三十四条全场空仓
+    expect(isDeviationNearOrOver(severe)).toBe(true);
+    expect(isOverOfficialRedLine(severe)).toBe(true);
+    expect(resolveAbnormalFact({
+      leaderName: 'L', leaderDevToday: severe, leaderDevPrev: severe
+    }).show).toBe(true);
+    // ③ §10 判不出 ⇒ 两个判据都 false，⛔ 不许把「没算出来」当成「越线」也不当成「安全」
+    expect(isDeviationNearOrOver(unknown)).toBe(false);
+    expect(isOverOfficialRedLine(unknown)).toBe(false);
+    expect(isOverOfficialRedLine(null)).toBe(false);
+    // ④ ★★ [MARKET-DRAGON-ONLY 2026-11-25] 「入选票触发」这一支**已删除**：
+    //   市龙一自己判不出 / 没越线时，多传一份 rows 也不许改变结论。
+    //   ⛔ 用户原话：「不是每只股票一异动，都要提示这个的，因为很多股票都不是市龙一……
+    //     他们只是属于个股异动，和题材无关。」
+    expect(resolveAbnormalFact({
+      leaderName: 'L', leaderDevToday: unknown, leaderDevPrev: unknown,
+      rows: [{ name: '逼近票', dev: near }]
+    }).show).toBe(false);
+    const byStock = resolveAbnormalFact({
+      leaderName: 'L', leaderDevToday: unknown, leaderDevPrev: unknown,
+      rows: [{ name: '越线票', dev: severe }]
+    });
+    expect(byStock.show).toBe(false);      // ★ 旧口径这里是 true + kind='stock'（11-24 误报的入口）
+    expect(byStock.kind).toBe('');
+    // ⑤ ⛔ 不许再有「跳过该龙位、顺延下一只」的票级实现
     const blocks = readFileSync('src/logic/topicvolratio/tvrb-blocks.js', 'utf8');
     expect(blocks).not.toContain('skippedAbnormal.map');
     expect(blocks).toContain('skippedAbnormalNames: []');
-    // ③ 规则手册写明「全场整片灰 / 波及所有票」，⛔ 不再写「顺延下一只」当结论
+    // ⑥ 规则手册写明「波及所有票 / 整片灰」，⛔ 不再写「顺延下一只」当结论
     const lines = readFileSync('src/logic/topicvolratio/tvrb-rules-lines.js', 'utf8');
-    expect(lines).toContain('波及到所有的票');
-    expect(lines).toContain('整个市场【整片灰');
-    // ④ 三件套版本链（★ [ABN-TB 2026-11-17] 第三十四条延伸上线 ⇒ 20 → 21）
-    expect(TVRB_RULES_VERSION).toBe(21);
+    expect(lines).toContain('波及所有票');
+    expect(lines).toContain('整片灰');
+    // ⑦ 大字标语同样要写清「整个市场整片灰」（屏幕第一眼能看到的唯一一句）
+    const abn = readFileSync('src/logic/topicvolratio/abnormal-10d.js', 'utf8');
+    expect(abn).toContain('整个市场整片灰');
+    // ⑧ 三件套版本链（★ [ABN-TB 2026-11-17] 第三十四条延伸上线 ⇒ 20 → 21；
+    //   ★★ [RULE-35 2026-11-18] 第三十五条【30日涨幅抱团】上线【改变选股结论】⇒ 21 → 22；
+    //   ★★ [RULE-35-SETTLE 2026-11-19] 第三十五条定稿门控 + 成员行兜底修复 ⇒ 22 → 23；
+    //   ★★ [RULE-35-SRC 2026-11-19] 30 日榜数据源优先级修复（空 Map 挡住结果表）⇒ 23 → 24；
+    //   ★★ [RULE-35-FORWARD 2026-11-19] 第三十五条的池子参数没转发 + 那一块没有渲染通道 ⇒ 24 → 25；
+    //   ★★ [BUYABLE-COUNT 2026-11-19] 「选股 N 只」改数能下单的只数（pickCount 是屏幕上直接看到的数字）⇒ 25 → 26）
+    //   ★★ [YIZI-NO-SHIFT 2026-11-20] 竞价一字【照选 + 占一档】取代「顺延下一龙位」⇒ 选股结论变 ⇒ 26 → 27 → 28
+    //   ★★ [DEV-RULE 2026-11-25] 监管异动换官方偏离值口径（异动日位移 11-12 → 11-11）⇒ 28 → 29
+    //   ★★ [MARKET-DRAGON-ONLY 2026-11-25] 第三十四条只认市龙一 ⇒ 29 → 30
+    //   ★★ [ROW-GRAY 2026-11-25] 第三十六条补【行级灰块】渲染旗子 ⇒ 30 → 31
+    //   ★★ [HOT-TOPIC-SYNC 2026-11-25] hot 派生题材缓存重建（11-25 大消费补 4 只）⇒ 31 → 32
+    //   ★★ [DEV-RULE-AUC-ONLY 2026-11-25] 选股侧偏离一律竞价（11-24 华东重机解灰）⇒ 32 → 33
+    //   ★★ [CASE-1123-HAILI 2026-11-26] 第二十九条通道文案 + 在列次数门控 ⇒ 33 → 34
+    //   ★★ [ABN-TB-MKTDRAGON 2026-11-26] 三十四·b 的 D-2 触发源收成市龙一 ⇒ 34 → 35
+    //   ★★ [TEMP-CORE-SCOPE 2026-11-27] 前五事实化按该日隔离未生效的临时题材（11-12 不再取羊字辈）⇒ 35 → 36
+    //   ★★ [EBB-TOPIC-MEMBER 2026-11-27] 退潮题材排除粒度：题材块 → 题材字段（11-16 大消费不入选）⇒ 36 → 37 → 38
+    //   ★★ [EBB-TOPIC-TEMP 2026-11-27] 禁买集合 = 原有题材 + 临时题材牵连（11-16 日出东方灰化）⇒ 38 → 39
+    //   ★★ [NEXT-DAY-BUY 2026-11-27] 第二十八条买点顺延到次日 + 存档多一个 newDragon.nextDayBuy ⇒ 45 → 46
+    expect(TVRB_RULES_VERSION).toBe(47);
     expect(_swCacheNo(readFileSync('public/sw.js', 'utf8'))).toBeGreaterThanOrEqual(67);
+  });
+
+  // ★★ [ROW-GRAY 2026-11-25 用户报障] 「逼近红线不买」只打标签、没有那一只股票的灰色块。
+  //   三段契约必须同时存在，缺一段就又回到「标签说不能买、看板上还是彩色可买」：
+  //   Logic 下发旗子 → UI 只给这一行挂类 → CSS 用既有灰化值渲染（⛔ 不灰整个题材块）。
+  it('[ROW-GRAY] 第三十六条的行级灰化从 Logic 到 UI 到 CSS 闭环', () => {
+    const plan = readFileSync('src/logic/topicvolratio/tvrb-plan.js', 'utf8');
+    expect(plan).toContain('p.noBuyRowGray = true');
+    const vue = readFileSync('src/components/topicvolratio/TvrbBuyBlock.vue', 'utf8');
+    expect(vue).toContain("'tvrb-row-nobuy-gray': p.noBuyRowGray");
+    expect(vue).not.toContain("'tvrb-row-nobuy-gray': block.noBuyRowGray"); // ⛔ 只灰行，不灰块
+    const css = readFileSync('src/assets/css/topic-vol-ratio-board.css', 'utf8');
+    expect(css).toContain('.tvrb-row.tvrb-row-nobuy-gray');
+    expect(css).toContain('grayscale(1)');
   });
 
   // ★★ [RULE-BUMP-GUARD 2026-11-13] 用户报障「现在刷新并没有生效」的整类根因锁。

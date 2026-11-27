@@ -6,6 +6,8 @@ import {
   effectiveCoreTopicsFor,
   hiddenTempCoreTokensOn,
   filterHiddenTopicText,
+  filterHiddenNoteTopics,
+  coreTopicTokenSet,
   tempCoreWindowDates,
   collectTempCoreHits
 } from './temp-core-topic.js';
@@ -106,6 +108,26 @@ describe('临时核心词 · 按日期生效（规则 〇·a）', () => {
     expect(effectiveCoreTopicsFor('', BASE, [TEMP], nextTradingDay)).toBe(BASE);
     expect(effectiveCoreTopicsFor('2026-11-13', BASE, [Object.assign({}, TEMP, { startDate: 'x' })], nextTradingDay)).toBe(BASE);
   });
+
+  // [TEMP-CORE-DEDUP 2026-11-26] 实测库里「羊字辈」被添加两次（id 4 / 5 完全同参）⇒
+  //   有效词表必须只出一份，否则同一题材在分组里出现两条、统计翻倍。
+  it('同名临时词重复多行 ⇒ 有效词表只保留一份（按 id 取第一条）', () => {
+    // 11-18(三) → 11-19(四) → 11-20(五) → 11-23(一)：本用例自己的交易日链
+    const CHAIN = ['2026-11-18', '2026-11-19', '2026-11-20', '2026-11-23'];
+    function nextInChain(d) {
+      const i = CHAIN.indexOf(d);
+      return i >= 0 && i + 1 < CHAIN.length ? CHAIN[i + 1] : null;
+    }
+    const a = { id: 4, name: '羊字辈', synonyms: ['羊字辈'], startDate: '2026-11-18', disabledFrom: null };
+    const b = { id: 5, name: '羊字辈', synonyms: ['羊字辈'], startDate: '2026-11-18', disabledFrom: null };
+    ['2026-11-18', '2026-11-19', '2026-11-20'].forEach(function(d) {
+      const eff = effectiveCoreTopicsFor(d, BASE, [b, a], nextInChain);
+      expect(eff.filter(function(c) { return c.name === '羊字辈'; })).toHaveLength(1);
+    });
+    // 区间末之后（11-23）⇒ 已过期，回主流题材
+    const expired = effectiveCoreTopicsFor('2026-11-23', BASE, [b, a], nextInChain);
+    expect(expired.filter(function(c) { return c.name === '羊字辈'; })).toHaveLength(0);
+  });
 });
 
 describe('临时词关停后隐藏股票后面的标签（只过滤显示，不删库）', () => {
@@ -123,12 +145,16 @@ describe('临时词关停后隐藏股票后面的标签（只过滤显示，不�
     });
   });
 
-  it('设置日之前（历史日）⇒ 不隐藏（临时词从未生效过）', () => {
-    expect(hiddenTempCoreTokensOn('2026-11-11', [STOPPED], nextTradingDay).size).toBe(0);
+  it('设置日之前（历史日）⇒ 隔离（历史日期不许用临时题材）', () => {
+    const ban = hiddenTempCoreTokensOn('2026-11-11', [STOPPED], nextTradingDay);
+    expect(ban.has('东方')).toBe(true);
+    expect(ban.has('羊字辈')).toBe(true);
   });
 
-  it('区间末之后（未来日）⇒ 不隐藏（已换回主流题材）', () => {
-    expect(hiddenTempCoreTokensOn('2026-11-17', [STOPPED], nextTradingDay).size).toBe(0);
+  it('区间末之后（未来日）⇒ 隔离（未来日期也不许用临时题材）', () => {
+    const ban = hiddenTempCoreTokensOn('2026-11-17', [STOPPED], nextTradingDay);
+    expect(ban.has('东方')).toBe(true);
+    expect(filterHiddenTopicText('水产品,农业,东方,羊字辈', ban)).toBe('水产品,农业');
   });
 
   it('精确匹配：只摘「东方」，不动「东方通信」「东方财富」', () => {
@@ -195,5 +221,71 @@ describe('临时题材 · 窗口内标签延续（修「只有设置日生效」
     const w2 = { name: '羊字辈', synonyms: ['羊字辈'], dates: ['2026-11-12'] };
     const hits = collectTempCoreHits([w2], { '2026-11-12': { '东方海洋': ['水产品', '羊字辈'] } });
     expect(hits.get('羊字辈').has('东方海洋')).toBe(true);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// [TEMP-CORE-SCOPE 2026-11-27 用户口径] 临时题材只在生效窗口内可用：
+//   「临时题材只在有效期那里生效，历史日期怎么会生效呢？……历史日期就没办法用临时题材了，
+//     未来日期也没办法用，只有指定的时间可以。」
+//   事故：11-18 才建的临时题材「羊字辈」，11-12 的选择理由 / 双击竞价量备注 / 昨日成交量 toast
+//   全都看得到 —— 因为题材库 stock_topics 一票一行（跨日期共享）、note 是 11-18 打标时回灌的。
+//   ⇒ 显示 / 派生层必须按【该行所属交易日】把这词隔离掉，且⛔ 不动任何业务表。
+// ══════════════════════════════════════════════════════════════════════════════════════
+describe('临时题材 · 日期隔离（历史日 / 未来日都不许出现）', () => {
+  // 真实库快照：11-18 建的「羊字辈」，11-12 的题材串里确实带着它
+  const YANG = { id: 4, name: '羊字辈', synonyms: ['羊字辈'], startDate: '2026-11-18', disabledFrom: null };
+  const CHAIN = ['2026-11-17', '2026-11-18', '2026-11-19', '2026-11-20', '2026-11-23'];
+  const nextInChain = (d) => {
+    const i = CHAIN.indexOf(d);
+    return i >= 0 && i + 1 < CHAIN.length ? CHAIN[i + 1] : null;
+  };
+
+  it('11-12（设置日之前）⇒ 隔离，题材串里摘掉「羊字辈」其余保留', () => {
+    const ban = hiddenTempCoreTokensOn('2026-11-12', [YANG], nextInChain, []);
+    expect(ban.has('羊字辈')).toBe(true);
+    expect(filterHiddenTopicText('水产品,农业,东方,羊字辈', ban)).toBe('水产品,农业,东方');
+  });
+
+  it('窗口内三天（11-18/19/20）⇒ 不隔离', () => {
+    ['2026-11-18', '2026-11-19', '2026-11-20'].forEach(function(d) {
+      expect(hiddenTempCoreTokensOn(d, [YANG], nextInChain, []).size).toBe(0);
+    });
+  });
+
+  it('窗口之后（11-23）⇒ 隔离', () => {
+    expect(hiddenTempCoreTokensOn('2026-11-23', [YANG], nextInChain, []).has('羊字辈')).toBe(true);
+  });
+
+  it('【主流词豁免】临时词与主流核心词同名/同义 ⇒ 永不隔离（不会误伤主流大类）', () => {
+    const NONG = { id: 9, name: '农业', synonyms: ['水产品'], startDate: '2026-11-18', disabledFrom: null };
+    const mainstream = [{ name: '农业', synonyms: ['种业', '水产品'] }];
+    const ban = hiddenTempCoreTokensOn('2026-11-12', [NONG], nextInChain, mainstream);
+    expect(ban.has('农业')).toBe(false);
+    expect(ban.has('水产品')).toBe(false);
+  });
+
+  it('coreTopicTokenSet：name + 同义词全部转小写 token', () => {
+    const set = coreTopicTokenSet([{ name: '农业', synonyms: ['Water', '种业'] }]);
+    expect(set.has('农业')).toBe(true);
+    expect(set.has('water')).toBe(true);
+    expect(set.has('种业')).toBe(true);
+  });
+
+  it('日期读不出 ⇒ 空集合（§10 不猜，不误伤任何标签）', () => {
+    expect(hiddenTempCoreTokensOn('', [YANG], nextInChain, []).size).toBe(0);
+  });
+
+  it('note 文本过滤：只摘括号内的整段，涨幅前缀与其它括号段一字不动', () => {
+    const ban = hiddenTempCoreTokensOn('2026-11-12', [YANG], nextInChain, []);
+    expect(filterHiddenNoteTopics('-1.60%(外贸,氢能源,羊字辈)', ban)).toBe('-1.60%(外贸,氢能源)');
+    expect(filterHiddenNoteTopics('10.02%(水产品,农业,东方,羊字辈)', ban)).toBe('10.02%(水产品,农业,东方)');
+    // 括号里只有这个词 ⇒ 整个括号去掉（⛔ 不留空括号）
+    expect(filterHiddenNoteTopics('+2.91%(羊字辈)', ban)).toBe('+2.91%');
+    // 无括号 / 空 token ⇒ 原样
+    expect(filterHiddenNoteTopics('3.42%', ban)).toBe('3.42%');
+    expect(filterHiddenNoteTopics('3.42%(羊字辈)', new Set())).toBe('3.42%(羊字辈)');
+    // 只是包含（子串）不删
+    expect(filterHiddenNoteTopics('1.0%(羊字辈概念)', ban)).toBe('1.0%(羊字辈概念)');
   });
 });

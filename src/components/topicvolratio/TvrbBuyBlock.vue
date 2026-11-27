@@ -53,6 +53,30 @@
         <span class="tvrb-topic">{{ headText }}</span>
       </div>
     </div>
+    <!-- ★★ [LEADER-TIMELINE 2026-11-27 用户口径] 第二十八条的「总龙一事件轴」一行小表：
+         首次分歧 → 首次退潮 → 二次确认退潮 → 切换日｜无三次退潮。
+         ⛔ 只在 Logic 层给了 block.timeline 才渲染（模板零判定，其它块一字不变）。 -->
+    <div
+      v-if="block.timeline"
+      class="tvrb-timeline-line tvrb-selectable"
+    >
+      {{ block.timeline }}
+    </div>
+    <!-- ★★ [LEADER-TIMELINE 三修] 每个事件为什么这么判（纯文案，Logic 层给；没有就不渲染） -->
+    <div
+      v-if="block.timelineBasis"
+      class="tvrb-timeline-basis tvrb-selectable"
+    >
+      {{ block.timelineBasis }}
+    </div>
+    <!-- ★★ [SWITCH-BAN 2026-11-27] 切换日的【题材转换思路】：老周期是什么题材、今天它有哪些题材段、
+         新题材入选票有没有沾到老周期字段（纯文案，Logic 层给；没有就不渲染） -->
+    <div
+      v-if="block.topicTransition"
+      class="tvrb-timeline-basis tvrb-selectable"
+    >
+      {{ block.topicTransition }}
+    </div>
     <!-- 第二行：选择理由（本看板的选股口径）+ 规则编号（与决策看板买点段同一枚 ①） -->
     <div class="tvrb-reason-line tvrb-selectable">
       选择理由：{{ block.reason }}<span
@@ -66,7 +90,13 @@
       v-for="p in block.picks"
       :key="p.name"
     >
-      <div class="tvrb-row">
+      <!-- ★★ [ROW-GRAY 2026-11-25 用户口径] 第三十六条「逼近红线不买」的那一只 ⇒【只灰这一行】。
+           ⛔ 旗子由 Logic 层给（p.noBuyRowGray），模板零判定；⛔ 不灰整个题材块
+           （同题材其它票照常买，用户原话「是这只股票范围灰色块（非题材）」）。 -->
+      <div
+        class="tvrb-row"
+        :class="{ 'tvrb-row-nobuy-gray': p.noBuyRowGray }"
+      >
         <span
           class="tvrb-seq tvrb-pen-trigger"
           :title="penTip"
@@ -74,7 +104,8 @@
         >{{ p.seq }}</span>
         <span
           class="tvrb-name tvrb-pen-trigger"
-          :title="penTip"
+          :class="{ 'tvrb-name-del': p.nameDel }"
+          :title="penTip + (p.nameDel ? '｜⏰ 次日买：今天不下单，明天买' : '')"
           @click.stop="togglePens(p.name)"
         >{{ p.name }}</span>
         <!-- ★★ [TVRB-AUC-YIZI 2026-11-10 用户口径] 竞价一字涨停【照常选进】，但紧跟股票名
@@ -254,7 +285,9 @@
       v-if="!block.qualified"
       class="tvrb-block-note tvrb-note-box unqualified tvrb-note-empty tvrb-selectable"
     >
-      该题材没有可买入（非竞价涨停）的股票
+      <!-- ★ [YIZI-NO-SHIFT 2026-11-20] 一字已算可买（照选 + 只打标签）⇒ 这里不能再写「非竞价涨停」，
+           否则空态文案会和买点侧口径打架（同一条口径两种说法是本类事故的第一成因）。 -->
+      该题材没有可买入（非连续停牌）的股票
     </div>
   </div>
 </template>

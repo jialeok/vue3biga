@@ -10,6 +10,9 @@ import { createQueryMemo } from './query-memo.js';
 import { fetchAllPages } from './paged-fetch.js';
 // [AUC-VOL-GUARD 2026-11-04] 竞价量归一（假 0 ⇒ 缺失）。唯一实现在 metrics-normalize.js，⛔ 别在各处重写判断。
 import { normalizeAucVolume } from './metrics-normalize.js';
+// ★★ [STALE-WATCHLIST 2026-11-20] 历史日期被一次性迁移灌进来的「陈旧名单行」全局过滤（§6 唯一实现）。
+//   ⛔ 不能只按某几个日期 / 某个 source 修：脏行横跨 100+ 天、4 个批次、4 种 source。
+import { filterStaleWatchlistRows } from '../logic/auction/stale-watchlist-row.js';
 let _invalidateTopicCacheFn = null;
 export function _setInvalidateTopicCacheFn(fn) { _invalidateTopicCacheFn = fn; }
         // ============================================================
@@ -105,7 +108,9 @@ async function _pullAuctionFromTableImpl(opts) {
 
             // 1) 读取 auction_watchlist（正式列表成员）
             let watchlistError = null;
-            const _watchlistCols = 'date,stock,code,volume,yest_volume,note,change_pct,topics,source,obs_auto_added,selected,bought,sold,fixed,updated_at,updated_by';
+            // created_at 是陈旧迁移判据的必要输入（stale-watchlist-row.js）：
+            // 事后人工补记的行 updated_at 可能很远，但 created_at 贴近目标日 ⇒ 必须保留。
+            const _watchlistCols = 'date,stock,code,volume,yest_volume,note,change_pct,topics,source,obs_auto_added,selected,bought,sold,fixed,created_at,updated_at,updated_by';
             const _buildWatchlistQuery = () => {
                 let q = sb.from('auction_watchlist').select(_watchlistCols);
                 if (sinceDate) q = q.gte('date', sinceDate);
@@ -163,6 +168,11 @@ async function _pullAuctionFromTableImpl(opts) {
                     }
                 })()
             ]);
+
+            // ★★ [STALE-WATCHLIST 2026-11-20] 读后立刻剔除陈旧迁移行，再建行 / 建正式成员索引。
+            //   顺序不能反：索引一旦收进 300+ 只，getTodayGroupList 会把它们全当正式成员上屏。
+            //   §10：这是「过滤明确的迁移脏行」，不是读失败兜底；watchlistError 仍按原逻辑上报。
+            watchlistRows = filterStaleWatchlistRows(watchlistRows);
 
             // ---- ① 合并 auction_watchlist（正式列表成员）----
             watchlistRows.forEach(function(row) {

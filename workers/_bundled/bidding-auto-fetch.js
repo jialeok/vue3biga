@@ -1,12 +1,12 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-11-14 08:11:52
+// 生成时间: 2026-11-23 03:58:03
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 10667（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 12472（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── _shared-source/date-utils.js ──────
@@ -272,6 +272,14 @@ const CONFIG = {
 
   // fuyao historical 并发数（同时发起的请求数，避免被限流）
   HISTORICAL_CONCURRENCY: 10,
+
+  // [BARS-BATCH-CLOUD 2026-11-20] 同花顺批量历史日线的单次代码上限（官方 10）。
+  //   20/30 日涨幅补腿靠它把 33 只压到 4 次 subrequest（⛔ 逐只打会把 50 次配额顶爆）。
+  HISTORICAL_BATCH_SIZE: 10,
+
+  // [BARS-BATCH-CLOUD 2026-11-20] 补腿 / 补 30 日涨幅的单趟时间预算（毫秒）。
+  //   9:26 那趟有「不超过 9:27」的硬指标 ⇒ 超预算就停手，把剩下的留给 9:27 / 16:03 幂等重跑。
+  BARS_FILL_BUDGET_MS: 20000,
 };
 
 // ────── bidding-auto-fetch/data/fuyao-api.js ──────
@@ -808,6 +816,114 @@ async function fetchFuyaoKlineWindowPct(env, items, dates, opts) {
   return out;
 }
 
+/**
+ * ★★ [BARS-BATCH-CLOUD 2026-11-20 用户报障「20/30 日涨幅有些票是空的，历史日期也很多」]
+ *
+ * 同花顺**批量**历史日线：`/api/a-share/prices/historical-batch`，单次最多 10 只。
+ *
+ * 为什么必须新增（⛔ 别再逐只打 historical）：
+ *   20 日涨幅要 19 根历史腿、30 日涨幅要 31 根。缺腿的票一次 10~33 只，
+ *   逐只打就是 10~33 次 subrequest —— Cloudflare 免费版**单次 invocation 只有 50 次**，
+ *   而 9:26/9:27 那两趟已经有 30+ 次（名单 / 量比 / 逐日腿 / 名单在列次数）。
+ *   ⇒ 逐只会把配额顶爆（[CLOSE-POST 2026-11-13] 就是这么把收盘列挤没的）。
+ *   批量后 33 只只要 4 次，代价降一个数量级。
+ *
+ * 口径与 `compute-range30-pct.mjs#fyBatchBars` 逐字一致（§6 同一套取值）：
+ *   · adjust='forward' 前复权（不复权在除权除息日会出现假暴跌）；
+ *   · date_ms 是北京时间午夜 ⇒ `msToDateStr` 内部已按 +8h 取日期；
+ *   · 只留 close_price > 0 的合法 bar，按日期升序。
+ *   ⚠️ 返回的 ymd 是 **'YYYY-MM-DD'**（带横线）—— 与 `range30-math.js#normalizeBars`
+ *      的 `YMD_RE` 以及 `stock_daily_pct.date` 同格式。⛔ 别去横线。
+ *
+ * §10：整批失败只记日志并跳过该批（调用方按「拿不到」处理，⛔ 绝不补 0、绝不伪造腿）。
+ *
+ * @param {object} env
+ * @param {string[]} codes 6 位股票代码（自动去重 / 过滤非法）
+ * @param {string} fromYmd 'YYYY-MM-DD' 起始（自然日）
+ * @param {string} toYmd   'YYYY-MM-DD' 结束（自然日，含当天）
+ * @returns {Promise<Map<string, Array<{ymd:string, close:number}>>>} code -> 升序 K 线
+ */
+async function fetchFuyaoBatchBars(env, codes, fromYmd, toYmd) {
+  const out = new Map();
+  const uniq = Array.from(new Set((codes || [])
+    .map(c => String(c || '').trim())
+    .filter(c => /^\d{6}$/.test(c))));
+  if (uniq.length === 0) return out;
+  const startMs = dateStrToMs(String(fromYmd).slice(0, 10));
+  const endMs = dateStrToMs(String(toYmd).slice(0, 10)) + 86400000 - 1;
+  if (!isFinite(startMs) || !isFinite(endMs)) return out;
+  const batchSize = CONFIG.HISTORICAL_BATCH_SIZE || 10;
+
+  for (let i = 0; i < uniq.length; i += batchSize) {
+    const chunk = uniq.slice(i, i + batchSize);
+    const thscodes = chunk.map(c => tickerToThscode(c)).filter(Boolean).join(',');
+    if (!thscodes) continue;
+    let data;
+    try {
+      data = await fuyaoProxyGet(env, '/api/a-share/prices/historical-batch', {
+        thscodes: thscodes,
+        interval: '1d',
+        start: String(startMs),
+        end: String(endMs),
+        adjust: 'forward'
+      }, FUYAO_SLOW_CALL_TIMEOUT_MS);
+    } catch (e) {
+      // 单批失败不连坐：其它批照样写（§11 失败不扩散）
+      console.warn('[bars-batch] 批量日线失败（' + chunk.length + ' 只，第 ' +
+        (Math.floor(i / batchSize) + 1) + ' 批）: ' + ((e && e.message) || e));
+      continue;
+    }
+    const groups = (data && data.item) || [];
+    for (let g = 0; g < groups.length; g++) {
+      const grp = groups[g];
+      if (!grp) continue;
+      const code = String(grp.thscode || '').slice(0, 6).replace(/\D/g, '');
+      if (code.length !== 6) continue;
+      const bars = [];
+      const raw = grp.item || [];
+      for (let k = 0; k < raw.length; k++) {
+        const it = raw[k];
+        if (!it || it.date_ms === null || it.date_ms === undefined) continue;
+        const close = Number(it.close_price);
+        if (!isFinite(close) || close <= 0) continue;
+        bars.push({ ymd: msToDateStr(Number(it.date_ms)), close: close });
+      }
+      if (bars.length === 0) continue;
+      bars.sort((a, b) => (a.ymd < b.ymd ? -1 : (a.ymd > b.ymd ? 1 : 0)));
+      out.set(code, bars);
+    }
+  }
+  return out;
+}
+
+/**
+ * 【纯函数】K 线 → 逐日涨幅（% 数值）：`close[t] / close[上一根 bar] − 1`。
+ *
+ * ⚠️ 与 `fetchFuyaoKlineWindowPct` 内部算法逐字相同（§6），区别只是**不筛窗口**：
+ *   这里要把整段 K 线换成逐日腿，交给调用方决定写哪几天。
+ * ⚠️ 「上一根 bar」是序列里的上一根，**不是日历上的前一天** —— 停牌期间前收盘不变，
+ *   复牌当天涨幅正是相对停牌前收盘算的，所以取上一根 bar 才是交易所口径。
+ * §10：第一根 bar 没有前收盘 ⇒ 不产出（⛔ 不拿 0 当前收）。
+ *
+ * @param {Array<{ymd:string, close:number}>} bars 升序 K 线
+ * @returns {Map<string, number>} ymd -> 涨幅%（可正可负）
+ */
+function barsToDailyPctMap(bars) {
+  const out = new Map();
+  const list = Array.isArray(bars) ? bars : [];
+  let lastValidClose = null;   // 上一根【合法】bar；坏 bar 直接跳过，不污染后一根的基准
+  for (let i = 0; i < list.length; i++) {
+    const curr = Number(list[i] && list[i].close);
+    const d = String((list[i] && list[i].ymd) || '').slice(0, 10);
+    if (!d || !isFinite(curr) || curr <= 0) continue;
+    if (lastValidClose !== null && lastValidClose > 0) {
+      out.set(d, (curr / lastValidClose - 1) * 100);
+    }
+    lastValidClose = curr;
+  }
+  return out;
+}
+
 // ────── bidding-auto-fetch/data/numcat-api.js ──────
 // numcat-api.js — 猫抓 numcat daily_auc + daily 接口
 //
@@ -1296,6 +1412,108 @@ async function upsertRange20Rows(env, rows) {
 }
 
 // ============================================================================
+// [R30-CLOUD 2026-11-20 用户报障] 30 日涨幅结果表的读写。
+//
+// 为什么现在才需要：30 日涨幅原来**只由 GitHub Actions**（`compute-range30-pct.mjs`）写。
+// 生产取证（2026-11-20）发现 Actions 的 schedule 严重漂移：cron 配的是北京 09:28 / 16:45 / 18:30，
+// 实际跑在**北京 01:43 / 03:07**，11-20 当天那三趟一趟都没跑。凌晨跑时当天 `auction_watchlist`
+// 还没生成 ⇒ 候选池退化成「近 40 个交易日名单」⇒ **当天首次出现的票（京蓝科技 / 华升股份 /
+// 格林达 / 江化微 / 海立股份）整天没有 30 日涨幅**，用户看到的就是行上空白。
+// ⇒ Worker 必须在自己的可靠时间线（09:26 / 09:27 / 16:03）把「当天名单」这一块补齐。
+//   Actions 继续负责「近 40 日宽池」（30天/20天补位与龙头组那些注入行）。
+// ============================================================================
+
+/** 当日 stock_range30_pct 已有行（只按 stock 去重：有行就跳过，⛔ 不混 leg 覆盖） */
+async function readRange30StocksForDate(env, date) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range30_pct?date=eq.' + encodeURIComponent(date) +
+    '&select=stock&order=stock.asc';
+  const data = await sbGetPaged(env, url);
+  const set = new Set();
+  (data || []).forEach(function (r) {
+    const s = String((r && r.stock) || '').trim();
+    if (s) set.add(s);
+  });
+  return set;
+}
+
+/** 写 stock_range30_pct（与 compute-range30-pct.mjs 同一 on_conflict：date,stock,leg） */
+async function upsertRange30Rows(env, rows) {
+  if (!rows || rows.length === 0) return;
+  await upsertBucketed(env, 'stock_range30_pct',
+    CONFIG.SUPABASE_URL + '/rest/v1/stock_range30_pct?on_conflict=date,stock,leg', rows);
+}
+
+/**
+ * ★★ [R30-FETCH 2026-11-23 用户报障] 读某日「30 日涨幅榜前 N」—— `readRange20TopForDate` 的对称实现。
+ *
+ * 【为什么必须有它】
+ *   用户原话：「30日强势补位的票为什么没有显示完整数据，五日趋势图几乎是空白，只有当天三个数据，
+ *   其余都没数据……我之前要求它获取数据的标准和20日强势补位一样，20日的强势补位票是放到worker中的，
+ *   和同花顺最近多板源股票一起获取数据，这样就是消耗同一个额度……30日的是不是这个逻辑」
+ *
+ *   审查结论：**不是**。`fetchAndWriteWatchlist` 的组B 只读了 `readRange20TopForDate` 并把
+ *   `range20Stocks` 并入 `constituents`；30 日榜从头到尾没进过 9:25 抓取名单 ⇒
+ *     · 30天补位票当天在 `market_metrics` 【无行】⇒ 竞价量比整列 `-`（猫抓只给名单内的票）；
+ *     · 展示日那一格只能靠前端 `trend-patch.js` 用腾讯日线/实时行情补「涨幅/竞价涨幅/昨日量」，
+ *       量比（唯一来源=猫抓，§1 铁律）永远补不上 —— 这正是用户截图里「三个数据 + 两个 -」的形状。
+ *   ⇒ 30 日补位票必须和 20 日补位票走同一条通道：并入 constituents，与最近多板 883410 同批抓取。
+ *
+ * 【⛔ 成本 = 0】猫抓 `daily_auc` 一次请求一批 symbols，额度按【请求次数】算，不按股票数算。
+ *   ⛔ 本函数以及调用方都【不写 auction_watchlist】—— 只并抓取名单，不破坏「当日名单 = 9:25 快照」
+ *   （§6；与打标签/龙头/20日补位同一处理）。
+ *
+ * ⚠️ 与 20 日同一条【结构性一天延迟】：当天榜要等收盘后才算得出来，所以这里读的是
+ *   【前一交易日】的完整榜（截至昨收）。今天才冲进前 N 的票明天 9:25 才会被抓到 —— 这条两边一致，
+ *   用户要的就是「和 20 日同一标准」。
+ *
+ * 🔴 `pct` 是【文本列】⇒ ⛔ 绝不能用 `order=pct.desc`（字典序会把 '8.94' 排在 '78.46' 前面）；
+ *   必须取回后按 Number() 排（与 `readRange20TopForDate` 同一个坑，11-05 实测）。
+ *
+ * ⚠️ 口径：该表目前只有 `leg='close'`（`range30-fill.js` / `compute-range30-pct.mjs` 都只写 close），
+ *   但主键含 leg ⇒ 未来若出现双腿，仍按「close 优先、auc 兜底保留」去重，不混口径、不丢票。
+ *
+ * @returns {Promise<Array<{name:string,pct:number,days:number,leg:string}>>}
+ */
+async function readRange30TopForDate(env, date, limit) {
+  const n = Number(limit) > 0 ? Math.floor(Number(limit)) : 20;
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range30_pct?date=eq.' +
+    encodeURIComponent(date) + '&select=stock,pct,days,leg&order=stock.asc,leg.asc';
+  // §10 读失败必须抛错，由 9:25 组B 的 settled() 降级并计入 groupBReadFailures，
+  //   ⛔ 不伪装成「前一日 30 日榜为空」（空榜会让 30 天补位票静默全天无量比，正是本轮要修的病）。
+  let data;
+  try {
+    data = await sbGetPaged(env, url);
+  } catch (e) {
+    const msg = (e && e.message) ? e.message : String(e);
+    const http = /HTTP \d+[\s\S]*/.exec(msg);
+    throw new Error('[R30-FETCH] 读取 stock_range30_pct(' + date + ') 失败: ' + (http ? http[0] : msg));
+  }
+  const num = function (v) {
+    if (v === null || v === undefined) return null;
+    const s = String(v).replace('%', '').replace(/,/g, '').trim();
+    if (s === '') return null;
+    const x = Number(s);
+    return isNaN(x) ? null : x;
+  };
+  const byName = new Map();
+  (data || []).forEach(function (r) {
+    const name = (r.stock || '').trim();
+    if (!name) return;
+    const pct = num(r.pct);
+    if (pct === null) return;                       // §10 缺值不得当 0 参与排名
+    const leg = (String(r.leg || 'close').trim().toLowerCase() === 'auc') ? 'auc' : 'close';
+    const cur = byName.get(name);
+    if (!cur) { byName.set(name, { name: name, pct: pct, days: Number(r.days) || 0, leg: leg }); return; }
+    if (cur.leg !== 'close' && leg === 'close') {
+      byName.set(name, { name: name, pct: pct, days: Number(r.days) || 0, leg: leg });
+    }
+  });
+  return Array.from(byName.values())
+    .sort(function (a, b) { return b.pct - a.pct; })
+    .slice(0, n);
+}
+
+// ============================================================================
 // [DAILY-LEGS-CLOUD 2026-11-06] 逐日腿云端补齐（替代本机 08:00 定时任务）
 //   §10：读取失败一律抛错；§32：按 Range 分页，不整表拉爆网关。
 // ============================================================================
@@ -1405,6 +1623,63 @@ async function readMarketMetricsForDate(env, date, scope) {
 }
 
 /**
+ * ★★ [R30-METRICS-HEAL 2026-11-23 用户报障「今天不能重补下30日强势补位票的数据吗？也就是那两只」]
+ * 读取「指定日 + 指定股票名」的完整竞价行（九列全套，⛔ 不是只读四要素）。
+ *
+ * 【为什么需要它】
+ *   `readMarketMetricsExtrasForDate` 只 select 四要素 + auc_pct_chg，**判断不了**
+ *   「这一天到底有没有这一只票的行」，更判断不了 volume / change_pct / yest_volume 是否为空。
+ *   而补位票的真实病是【整行都不存在】（百洋股份 11-17~11-20 零行）——
+ *   只补字段的 extras 链路对它完全无效，必须先知道「哪些 (date, stock) 需要新建」。
+ *
+ * 🔴 `stock=in.(...)` 的坑（2026-11-23 实测）：⛔ 不能把整段 `("A","B")` 交给
+ *   encodeURIComponent —— 引号被转成 %22 后 PostgREST 直接回 `PGRST125 Invalid path`。
+ *   股票名里没有逗号，逐个名字 encode 后裸拼即可。
+ *
+ * §10：读失败一律抛错（⛔ 不许返回 []）—— 空数组会被上游误判成「这一天没有行」而重复新建。
+ *
+ * @returns {Promise<Array<{name:string, code:string, volume:string, yest_volume:string,
+ *   change_pct:string, auc_pct_chg:string, um_vol:string, open_bid_pct:string,
+ *   auc_vol_ratio:string, auc_turnover:string}>>}
+ */
+async function readMarketMetricsRowsForDate(env, date, names) {
+  const uniq = Array.from(new Set((names || []).map(s => String(s || '').trim()).filter(Boolean)));
+  if (uniq.length === 0) return [];
+  const cols = 'stock,code,volume,yest_volume,change_pct,auc_pct_chg,um_vol,open_bid_pct,auc_vol_ratio,auc_turnover';
+  const s = v => (v === undefined || v === null ? '' : String(v));
+  const out = [];
+  const CHUNK = 40;          // 与 readDailyLegsForStocks 同一分片，控制 URL 长度
+  for (let i = 0; i < uniq.length; i += CHUNK) {
+    const chunk = uniq.slice(i, i + CHUNK);
+    const inVal = '(' + chunk.map(n => encodeURIComponent(n)).join(',') + ')';
+    const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?date=eq.' + encodeURIComponent(date) +
+      '&scope=eq.auction' +
+      '&stock=in.' + inVal +
+      '&select=' + cols +
+      // Range 分页（sbGetPaged）必须有确定性顺序，否则跨页可能重复/漏行（§32）
+      '&order=stock.asc';
+    const data = await sbGetPaged(env, url);
+    (data || []).forEach(function (r) {
+      const name = (r.stock || '').trim();
+      if (!name) return;
+      out.push({
+        name: name,
+        code: (r.code || '').trim(),
+        volume: s(r.volume),
+        yest_volume: s(r.yest_volume),
+        change_pct: s(r.change_pct),
+        auc_pct_chg: s(r.auc_pct_chg),
+        um_vol: s(r.um_vol),
+        open_bid_pct: s(r.open_bid_pct),
+        auc_vol_ratio: s(r.auc_vol_ratio),
+        auc_turnover: s(r.auc_turnover)
+      });
+    });
+  }
+  return out;
+}
+
+/**
  * [EXTRAS-PATCH 2026-09-11] 读取某日 market_metrics 竞价行的「竞价四要素 + 竞价涨幅」现状。
  * 供 runAuctionExtrasPatch 判断哪些行还缺字段 —— 只补缺失的，不重复写已有值（幂等）。
  * ⚠️ 读取失败必须抛错（§10：读取失败 ≠ 空数据）：否则会把「读不到」误判成「全都缺」，
@@ -1441,9 +1716,16 @@ async function readMarketMetricsExtrasForDate(env, date) {
  * ⚠️ 读取失败必须抛错（§10：读取失败 ≠ 空数据）：否则会把「读不到」误判成「全都缺」。
  */
 async function readMarketMetricsSnapshotFieldsForDate(env, date) {
+  // ★ [RATIO-HEAL-FULLFIELDS 2026-11-19] select 从「快照三字段」扩到 FULL_FIELDS 全集：
+  //   9:26/9:27 猫抓补缺（ladder-recheck.js#fillAucFromNumcat）的 ratioOnly 路径需要知道
+  //   已有行的 yest_volume / change_pct / um_vol / open_bid_pct 是否为空 —— 空 ⇒ 猫抓整行值
+  //   可以只填空补上（§11 只填空不覆盖）；不知道就永远只补 auc_vol_ratio 一列，
+  //   11-19 事故里 yest_volume / change_pct 全空却无人补（见 ladder-recheck.js 文件头）。
+  //   ⚠️ 纯增量字段：其余两个调用方（extras-workflow / morning-workflow#repairOutOfRangeAucPct）
+  //      只读 code / volume / auc_pct_chg，多返回字段不影响它们（§11 默认无行为）。
   const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?date=eq.' + encodeURIComponent(date) +
     '&scope=eq.auction' +
-    '&select=stock,code,auc_pct_chg,auc_vol_ratio,auc_turnover,volume&limit=2000';
+    '&select=stock,code,volume,yest_volume,change_pct,auc_pct_chg,um_vol,open_bid_pct,auc_vol_ratio,auc_turnover&limit=2000';
   const resp = await sbFetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
@@ -1454,10 +1736,14 @@ async function readMarketMetricsSnapshotFieldsForDate(env, date) {
   return (data || []).map(r => ({
     name: (r.stock || '').trim(),
     code: (r.code || '').trim(),
+    volume: pick(r.volume),
+    yest_volume: pick(r.yest_volume),
+    change_pct: pick(r.change_pct),
     auc_pct_chg: pick(r.auc_pct_chg),
+    um_vol: pick(r.um_vol),
+    open_bid_pct: pick(r.open_bid_pct),
     auc_vol_ratio: pick(r.auc_vol_ratio),
-    auc_turnover: pick(r.auc_turnover),
-    volume: pick(r.volume)
+    auc_turnover: pick(r.auc_turnover)
   })).filter(r => r.name);
 }
 
@@ -1997,6 +2283,7 @@ async function upsertLeaderDivergeRows(env, rows) {
   await upsertBucketed(env, 'tvrb_leader_diverge',
     CONFIG.SUPABASE_URL + '/rest/v1/tvrb_leader_diverge?on_conflict=date,stock', rows);
 }
+
 
 
 // ────── bidding-auto-fetch/logic/holiday-check.js ──────
@@ -3568,11 +3855,85 @@ async function checkTradingDay(env, today, cache, logs) {
  */
 const RANGE20_FETCH_TOP_N = 25;
 
+/**
+ * ★★ [R30-FETCH 2026-11-23 用户报障] 30 日涨幅榜并进 9:25 抓取名单的取数只数 ——
+ *   `RANGE20_FETCH_TOP_N` 的对称常量（用户原话：「30日强势补位……获取数据的标准和20日强势补位一样」）。
+ *
+ * 🔴 为什么 30 日必须取 50，而 20 日只用 25（**实测数字，不是凭感觉**）：
+ *   30 日涨幅是「期末收盘 ÷ 期初前收盘」的【一次性比值】，窗口每天滚动一天 —— 期初那天滚出窗口时，
+ *   如果滚出的是一根大涨 / 大跌的日子，30 日涨幅会**整体跳一大截**，名次抖得远比 20 日（逐日复利、
+ *   平滑）厉害。真实库实测（2026-11-20 的 30 日榜，502 行）：
+ *     · 第 15 名 慈文传媒 33.45%（在 25 名以内 ⇒ 按 20 日的 25 这个数能覆盖）
+ *     · 第 45 名 百洋股份  9.77% ← ⛔ 25 名覆盖不到
+ *   而 11-23 用户截图里的「30日强势补位」第一名**正好就是百洋股份 +70.10%**
+ *   （它 11-21 的 30 日值还是 −8.88%，一天之内因为期初日滚出而翻到 +70% ⇒ 名次从第 45 跳到补位第一）。
+ *   ⇒ 取 25 等于「修了代码但修不好用户看到的那只票」。取 50（该日门槛 7.28%）才真正兜住这批票。
+ *
+ * ⛔ 成本仍然是 0：`fetchNumcatWithRetry` 把整个名单的 code 用逗号拼成**一次**请求
+ *   （`numcatDailyAuc(env, symbols, ...)`，见该函数 `symbols = constituents.map(c => c.code).join(',')`），
+ *   猫抓额度按【请求次数】算、不按 symbols 个数算 ⇒ 名单多 25 个 code 不多烧一次额度。
+ */
+const RANGE30_FETCH_TOP_N = 50;
+
 // 2. 获取最近多板成分股 + 写入 auction_watchlist
 // [LATENCY 2026-09-11] 原来这一步是 9 次串行网络调用（≈11.6s），现改为 3 组并行（≈3s）：
 //   组A：成分股 ∥ 代码表 ∥ 交易日历       ← 三者互不依赖
-//   组B：前日名单 ∥ 今日名单 ∥ 前日标签 ∥ 前日龙头 ∥ 前日20日涨幅榜  ← 只依赖组A的交易日历
+//   组B：前日名单 ∥ 今日名单 ∥ 前日标签 ∥ 前日龙头 ∥ 前日20日涨幅榜 ∥ 前日30日涨幅榜  ← 只依赖组A的交易日历
 //   组C：仅对「仍缺 code 的名字」做一次按名精确补码（通常 0 次或 1 次小请求）
+
+/**
+ * ★★ [R30-FETCH 2026-11-23] 把「涨幅榜类」候选（20 日 / 30 日）并入 9:25 抓取名单 —— 唯一实现（§6）。
+ *
+ * 为什么需要一个共用函数：20 日与 30 日两张结果表**形状完全一样**
+ *   （`stock_range20_pct` / `stock_range30_pct` 都只有 stock/pct/days/leg，没有 code 列），
+ *   合并动作也完全一样（按名查 code、按 code 去重、查不到 code 的逐只留痕）。
+ *   本轮事故正是「20 日加了、30 日没加」这个**类根因** ⇒ 抄成两份必然还会漏第二份。
+ *
+ * 【红线】
+ *   · ⛔ 只并入 `constituents`（= market_metrics 抓取名单），⛔ 不写 `auction_watchlist`：
+ *     补位票是视图注入壳行，写进名单会破坏「当日名单 = 9:25 快照」的锁定口径（§6）。
+ *   · ⛔ 成本 = 0：猫抓 `daily_auc` 一次请求一批 symbols，额度按【请求次数】算、不按股票数算。
+ *   · §10 查不到 code 的票【必须逐只打印】，⛔ 不许静默 return —— 青岛食品（11-11）就是这么
+ *     全天无量比而无人知晓的（`[RANGE20-CODE-FALLBACK]`）。
+ *
+ * @param {Array<{name:string,code:string}>} constituents 当前抓取名单（不修改，返回新数组）
+ * @param {Array<{name:string,pct:number,days:number,leg:string}>} ranked 榜单前 N（来自 supabase-write）
+ * @param {Object<string,string>} codeMap 股票名 → code（已被组C 按名补码增强过）
+ * @param {{label:string, prevDay:string, logs:string[]}} o label 是日志里的统一前缀
+ *        （'20日涨幅补位' / '30日涨幅补位'），⛔ 别在调用处再拼一次
+ * @returns {Array<{name:string,code:string}>} 合并后的名单（无新增时原样返回）
+ */
+function mergeRankedStocksIntoConstituents(constituents, ranked, codeMap, o) {
+  const list = Array.isArray(ranked) ? ranked : [];
+  const logs = (o && o.logs) || [];
+  const label = (o && o.label) || '涨幅补位';
+  if (list.length === 0) return constituents;
+  const existingNames = new Set(constituents.map(c => c.name));
+  const existingCodes = new Set(constituents.map(c => c.code));
+  const extra = [];
+  const noCodeNames = [];
+  list.forEach(function (r) {
+    if (!r || !r.name || existingNames.has(r.name)) return;
+    const code = codeMap[r.name] || '';
+    if (!code) { noCodeNames.push(r.name); return; }          // §10 留痕，见函数头红线
+    if (existingCodes.has(code)) return;
+    existingNames.add(r.name);
+    existingCodes.add(code);
+    extra.push({ name: r.name, code: code });
+  });
+  if (extra.length > 0) {
+    logs.push(label + '(基于 ' + o.prevDay + ' 完整榜, 前 ' + list.length + ' 名): ' +
+      extra.length + ' 只，合并到抓取名单（不写 watchlist，0 猫抓额度）');
+  } else {
+    logs.push(label + ': 榜上前 ' + list.length + ' 名均已在抓取名单内');
+  }
+  if (noCodeNames.length > 0) {
+    logs.push('⚠️ ' + label + '有 ' + noCodeNames.length + ' 只查不到 code ⇒ 未进 9:25 抓取名单' +
+      '（当天竞价量比必然为空，需补 stockcodemap 或等 16:30 云端回填）: ' + noCodeNames.join('、'));
+  }
+  return extra.length > 0 ? constituents.concat(extra) : constituents;
+}
+
 async function fetchAndWriteWatchlist(env, today, cache, logs) {
   logs.push('步骤1：并行获取 成分股 / 代码表 / 交易日历...');
   const [ladderRes, codeMapRes, tdRes] = await Promise.all([
@@ -3618,8 +3979,8 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
   const prevDay = recentDays.length >= 2 ? recentDays[recentDays.length - 2] : null;
 
   // 组B：名单来源并行（原来串行 3 次 + 中间夹着 2 次重复的代码表读取）
-  logs.push('步骤1b：并行读取 前日名单 / 今日名单 / 前日标签 / 前日龙头 / 20日涨幅榜...');
-  const [prevWlRes, todayWlRes, tagRes, dragonRes, range20Res] = await Promise.all([
+  logs.push('步骤1b：并行读取 前日名单 / 今日名单 / 前日标签 / 前日龙头 / 20日涨幅榜 / 30日涨幅榜...');
+  const [prevWlRes, todayWlRes, tagRes, dragonRes, range20Res, range30Res] = await Promise.all([
     settled(prevDay ? readAuctionWatchlistForDate(env, prevDay) : Promise.resolve([])),
     settled(readAuctionWatchlistForDate(env, today)),
     settled(prevDay ? readAuctionTagsForDate(env, prevDay) : Promise.resolve([])),
@@ -3627,16 +3988,26 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
     settled(prevDay ? readDragonLeadersForDate(env, prevDay) : Promise.resolve([])),
     // [RANGE20-FETCH 2026-11-05] 前一交易日的 20 日涨幅榜（供「20日补位组」数据完整获取）。
     //   放进组B 并行，是为了【不增加任何额外延迟】—— 它和上面 4 个读互不依赖。
-    settled(prevDay ? readRange20TopForDate(env, prevDay, RANGE20_FETCH_TOP_N) : Promise.resolve([]))
+    settled(prevDay ? readRange20TopForDate(env, prevDay, RANGE20_FETCH_TOP_N) : Promise.resolve([])),
+    // ★★ [R30-FETCH 2026-11-23 用户报障] 前一交易日的 30 日涨幅榜（供「30日补位组」数据完整获取）。
+    //   用户原话：「30日强势补位的票为什么没有显示完整数据……我之前要求它获取数据的标准和
+    //   20日强势补位一样，20日的强势补位票是放到worker中的，和同花顺最近多板源股票一起获取数据」。
+    //   ★ 审查结论：此前【完全没有这一路】—— 30 日榜从没进过 9:25 抓取名单，所以 30天补位票
+    //     当天在 market_metrics 无行、量比（唯一来源=猫抓，§1）永远补不上。
+    //   ⛔ 同样放进组B 并行：与上面 5 个读互不依赖，0 额外延迟、0 猫抓额度。
+    settled(prevDay ? readRange30TopForDate(env, prevDay, RANGE30_FETCH_TOP_N) : Promise.resolve([]))
   ]);
   // 20日补位候选：只有名字+涨幅，code 由下方 codeMap / 按名补码 两路补（该表没有 code 列）
   const range20Stocks = (range20Res.ok && range20Res.v) || [];
   if (range20Res.e) logs.push('读取 20 日涨幅榜失败(非致命): ' + range20Res.e.message);
+  // 30日补位候选：同上（只有名字+涨幅，code 由 codeMap / 按名补码补）
+  const range30Stocks = (range30Res.ok && range30Res.v) || [];
+  if (range30Res.e) logs.push('读取 30 日涨幅榜失败(非致命): ' + range30Res.e.message);
 
-  // [CLOUD-0927-HEAL 2026-11-11 §10] 组B 五路并行读的诊断结果随返回值带出给 runMorning，
+  // [CLOUD-0927-HEAL 2026-11-11 §10] 组B 六路并行读的诊断结果随返回值带出给 runMorning，
   //   让完整性汇总能看见「读失败」和「龙头名册为空」；⛔ 不在汇总处重复读、不引全局变量。
   //   （这几个 settled 结果是本函数局部变量，runMorning 作用域里拿不到，必须显式传出。）
-  const groupBReadFailures = [prevWlRes, todayWlRes, tagRes, dragonRes, range20Res]
+  const groupBReadFailures = [prevWlRes, todayWlRes, tagRes, dragonRes, range20Res, range30Res]
     .filter(r => r && r.ok === false).length;
   const dragonRosterEmpty = !!(dragonRes && dragonRes.ok && Array.isArray(dragonRes.v) && dragonRes.v.length === 0);
   const groupBDiag = {
@@ -3712,6 +4083,9 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
     //   **恰好最容易不在 stockcodemap 里**（它们多半不在 883410 成分股内）。
     //   不放进这里按名补码 ⇒ 下方 `if (!code) return` 会把它们整批丢掉，等于没做。
     .concat(range20Stocks)
+    // ★ [R30-FETCH 2026-11-23] 30 日榜同理：该表也没有 code 列，且「30天补位票」同样大概率
+    //   不在 stockcodemap（多半不在 883410 成分股内）⇒ 不一起按名补码就会被 `if (!code)` 整批丢掉。
+    .concat(range30Stocks)
     .map(s => s.name)
     .filter(n => n && !codeMap[n]);
   if (nameless.length > 0) {
@@ -3790,39 +4164,35 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
   //   ⛔ 成本 = 0：猫抓 `daily_auc` 一次请求一批 symbols，额度按【请求次数】算。
   //   ⛔ 不写 auction_watchlist：与打标签/龙头同一处理，只并入 constituents，
   //      不破坏「当日名单 = 9:25 快照」的锁定口径（§6）。
-  if (range20Stocks.length > 0) {
-    const existingNames = new Set(constituents.map(c => c.name));
-    const existingCodes = new Set(constituents.map(c => c.code));
-    const range20Extra = [];
-    // ★ [RANGE20-CODE-FALLBACK 2026-11-11 §10] 以前「查不到 code」是静默 return，
-    //   日志只写「均已在名单内（或查不到 code）」⇒ 青岛食品这类票漏抓全天无人知晓，
-    //   用户只能在趋势图看到「无量比」。现在把被丢的名字逐只列出来，可观测、可追责。
-    const noCodeNames = [];
-    range20Stocks.forEach(function (r) {
-      if (!r || !r.name || existingNames.has(r.name)) return;
-      const code = codeMap[r.name] || '';
-      if (!code) { noCodeNames.push(r.name); return; }
-      if (existingCodes.has(code)) return;
-      existingNames.add(r.name);
-      existingCodes.add(code);
-      range20Extra.push({ name: r.name, code: code });
-    });
-    if (range20Extra.length > 0) {
-      logs.push('20日涨幅补位(基于 ' + prevDay + ' 完整榜, 前 ' + range20Stocks.length + ' 名): ' +
-        range20Extra.length + ' 只，合并到抓取名单（不写 watchlist，0 猫抓额度）');
-      constituents = constituents.concat(range20Extra);
-    } else {
-      logs.push('20日涨幅补位: 榜上前 ' + range20Stocks.length + ' 名均已在抓取名单内');
-    }
-    if (noCodeNames.length > 0) {
-      logs.push('⚠️ 20日涨幅补位有 ' + noCodeNames.length + ' 只查不到 code ⇒ 未进 9:25 抓取名单' +
-        '（当天竞价量比必然为空，需补 stockcodemap 或等 16:30 云端回填）: ' + noCodeNames.join('、'));
-    }
-  }
+  //
+  // ★★ [R30-FETCH 2026-11-23] 20 日 / 30 日两条榜的合并逻辑本来一模一样（只有名字+涨幅、没有
+  //   code 列、都要按名补码、都要逐只留痕被丢的名字）⇒ 抽成 `mergeRankedStocksIntoConstituents`
+  //   一份实现（§6）。⛔ 别再把其中一条抄成第二份 —— 抄一份就会漏一份的修复（本轮 30 日缺抓
+  //   就是「20 日加了、30 日没加」这个类根因）。
+  constituents = mergeRankedStocksIntoConstituents(constituents, range20Stocks, codeMap, {
+    label: '20日涨幅补位', prevDay: prevDay, logs: logs
+  });
+
+  // ★★ [R30-FETCH 2026-11-23 用户报障] 合并「30日涨幅补位票」到抓取名单（与上面 20 日同一条通道）。
+  //
+  //   用户原话：「30日强势补位的票为什么没有显示完整数据，五日趋势图几乎是空白，只有当天三个数据，
+  //   其余都没数据……我之前要求它获取数据的标准和20日强势补位一样，20日的强势补位票是放到worker中的，
+  //   和同花顺最近多板源股票一起获取数据，这样就是消耗同一个额度……你审查下30日强势补位的票是不是
+  //   这个逻辑，如果不是的话，要完善下。」
+  //
+  //   ★ 审查结论：此前【不是】。组B 只读了 20 日榜，30 日榜从没进来过 ⇒ 30天补位票当天
+  //     `market_metrics` 无行 ⇒ 竞价量比（唯一来源=猫抓，§1 铁律）整列 `-`；
+  //     前端 `trend-patch.js` 只能用腾讯日线/实时行情补「涨幅/竞价涨幅/昨日量」三项 ⇒
+  //     用户看到的正是「当天三个数据 + 两个 -」。
+  //   ⇒ 现在与 20 日完全同标准：并入 constituents，与最近多板 883410 同批抓取，
+  //     0 额外额度、⛔ 不写 auction_watchlist（当日名单仍 = 9:25 快照，§6）。
+  constituents = mergeRankedStocksIntoConstituents(constituents, range30Stocks, codeMap, {
+    label: '30日涨幅补位', prevDay: prevDay, logs: logs
+  });
 
   // [DEGRADE 2026-09-15] 降级后仍要求「有可抓取的标的」，否则整轮无从下手（§10 读失败≠空）
   if (constituents.length === 0) {
-    return { error: '抓取名单为空：883410 成分股不可用，且前一日名单/打标签/龙头名册/20日涨幅榜均无可用标的',
+    return { error: '抓取名单为空：883410 成分股不可用，且前一日名单/打标签/龙头名册/20日涨幅榜/30日涨幅榜均无可用标的',
       groupBReadFailures: groupBDiag.groupBReadFailures,
       dragonRosterEmpty: groupBDiag.dragonRosterEmpty,
       prevDay: groupBDiag.prevDay };
@@ -5554,6 +5924,25 @@ async function runRangePctHeal(env, opts) {
 // 【数据安全】§10 读取失败一律停止；§11 删除只针对当日 `source='worker-fallback'`，
 //  且必须发生在「真实名单写入成功 + 重读复核达标」之后，删除后再复核一次。
 // ============================================================================
+// [WL-CANDIDATES 2026-11-19 事故修复] 「9:26/9:27 补抓空转 + 谎报齐全」时序盲区
+// ----------------------------------------------------------------------------
+// 11-19 实测（bidding_fetch_log 取证）：
+//   ① 9:25 morning：猫抓两把 key 全 403「今日调用额度已用完」⇒ daily_auc 一行没拿到，
+//      auction_watchlist 29 行名单写成功（行情列全空），market_metrics 当日 0 行 ⇒ ok=false；
+//   ② 9:26 ladder26：883410 只回 29 只（<30）⇒ 判残缺 ⇒ ladderForAuc=null；
+//      fillAucFromNumcat 读 market_metrics = 0 行 ⇒ symbols=0 ⇒
+//      日志「✅ 当日 9:25 名单竞价量比齐全 → 0 次猫抓请求」——实际量比 0/38 全空，纯假话；
+//   ③ 9:27 snapshot：同样 metrics 0 行 ⇒ 同样谎报；
+//   ④ 9:29 前端 ths-patch 才把 38 行行情壳写进 metrics（竞价量/竞价涨幅来自同花顺，
+//      量比按红线留空）⇒ 但云端兜底时点已全部过完，量比/昨量/涨幅整天无人再补。
+// 修复三件事（全部幂等，正常日行为不变）：
+//   A. fillAucFromNumcat 把今日 auction_watchlist 正式成员（带 6 位 code）纳入补抓候选
+//      —— metrics 0 行时名单就是唯一可靠的目标来源；
+//   B. pickNumcatTargets 返回 checked（真实审过的候选数），日志区分「齐全」与「无候选」；
+//   C. ratioOnly 从「只补量比一列」扩为「量比 + 该行当前为空的 FULL_FIELDS 字段」
+//      （supabase-write.js#readMarketMetricsSnapshotFieldsForDate 同步扩列），
+//      yest_volume / change_pct 与量比同源（猫抓 daily_auc 权威输出），只填空不覆盖（§11）。
+// ============================================================================
 
 
 
@@ -5585,9 +5974,17 @@ function hasValue(v) {
 /**
  * 纯函数：算出这一趟需要猫抓补哪些票。
  *   · 库里今天连行都没有 ⇒ 需要写【整行】；
- *   · 有行但 auc_vol_ratio 为空 ⇒ 只补这一列（⛔ 不覆盖其它已有值，§11）；
+ *   · 有行但 auc_vol_ratio 为空 ⇒ 补量比 + 该行【其它为空字段】（见下方 [FULLFIELDS]）；
  *   · 已有量比 ⇒ 完全不碰（幂等，避免重复写库）。
  * 只认 6 位代码；按 code 去重；不会返回空 symbols 让调用方白烧额度。
+ *
+ * ★★ [WL-CANDIDATES 2026-11-19] 新增 `opts.extraCandidates`（今日 auction_watchlist 正式成员，
+ *   {name, code}）：修复 11-19 事故里的【时序盲区误判】——
+ *   9:25 morning 猫抓 403 额度用尽 ⇒ market_metrics 当日 0 行 ⇒ 9:26/9:27 兜底读 metrics
+ *   也是 0 行 + ladder 又被判残缺（null）⇒ symbols=0 ⇒ 日志谎报「竞价量比齐全 → 0 次猫抓请求」，
+ *   实际上名单里 29 只正式成员全都缺量比。⇒ 候选源必须把【正式名单】也算上：
+ *   名单行有 code、缺量比 ⇒ 照样进入补抓（metrics 0 行时走 fullRows 整行补写）。
+ *   正常日（morning 成功）名单成员的量比都在 ⇒ 全部被 `已有量比 ⇒ 不碰` 挡掉 ⇒ 仍然 0 请求（§32）。
  */
 function pickNumcatTargets(ladder, metricsRows, opts) {
   const byName = new Map();
@@ -5598,34 +5995,41 @@ function pickNumcatTargets(ladder, metricsRows, opts) {
   const fullRows = [];
   const ratioOnly = [];
   const symbols = [];
-  const add = function (name, code) {
+  let checked = 0;   // 本趟真正审过的「有 6 位 code」的候选数（供日志如实区分「齐全」与「无候选」）
+  const add = function (name, code, existing) {
     if (!name || !/^\d{6}$/.test(code) || seenCode.has(code)) return;
-    const m = byName.get(name);
+    const m = existing !== undefined ? existing : byName.get(name);
+    checked++;
     if (m && hasValue(m.auc_vol_ratio)) return;      // 已有量比 ⇒ 完全不碰（幂等）
     seenCode.add(code);
     symbols.push(code);
     if (!m) fullRows.push({ name: name, code: code });
-    else ratioOnly.push({ name: name, code: code }); // 有行缺量比 ⇒ 只补这一列（§11）
+    else ratioOnly.push({ name: name, code: code, existing: m }); // 有行缺量比 ⇒ 补量比 + 空字段（§11）
   };
   (ladder || []).forEach(function (c) {
     if (!c) return;
     add(String(c.name || '').trim(), String(c.code || '').trim());
   });
-  // ★★ [RANGE20-RATIO-HEAL 2026-11-11] 旧实现只遍历 `ladder`（883410 真实成分股），
+  // ★ [WL-CANDIDATES 2026-11-19] 正式名单候选（在 ladder 之后追加；同名同码被 seenCode 去重）。
+  //   ⛔ 只收正式成员（观察壳行 / 无 code 行在 add() 里被 6 位码判据挡掉，这里再显式滤一遍）。
+  ((opts && opts.extraCandidates) || []).forEach(function (c) {
+    if (!c || c.obs_auto_added) return;
+    add(String(c.name || '').trim(), String(c.code || '').trim());
+  });
+  // ★ [RANGE20-RATIO-HEAL 2026-11-11] 旧实现只遍历 `ladder`（883410 真实成分股），
   //   ⇒ 20 日涨幅补位票（不写 watchlist、不在 ladder 里）即便当天有 market_metrics 行、
   //     缺 `auc_vol_ratio`，9:26 也永远补不到 ⇒ 只能等 16:30 收盘后回填（用户竞价时间看不到）。
   //   11-11 实测「青岛食品」就是这个形状：9:27 前端补出 ths-patch 壳行、量比永久为空，
   //   而同为补位票的「海洋王」9:25 就抓到量比 1.94。
   //   ⇒ 打开本开关后，把「当日已有行但缺量比」的票一并纳入 ratioOnly。
   //   ⚠️ 仍然只在 `symbols.length > 0` 时才发 1 次猫抓请求；9:25 全抓全时 0 请求、0 额度（§32）。
-  //   ⚠️ 只补 `auc_vol_ratio` 一列，⛔ 不覆盖其它已有字段（buildAucMetricsWriteRows ratioOnly 路径）。
   if (opts && opts.includeAllRows) {
     (metricsRows || []).forEach(function (r) {
       if (!r) return;
       add(String(r.name || '').trim(), String(r.code || '').trim());
     });
   }
-  return { symbols: symbols, fullRows: fullRows, ratioOnly: ratioOnly };
+  return { symbols: symbols, fullRows: fullRows, ratioOnly: ratioOnly, checked: checked };
 }
 
 const FULL_FIELDS = [
@@ -5667,16 +6071,33 @@ function buildAucMetricsWriteRows(parsedToday, today, nowIso, targets) {
   (targets.ratioOnly || []).forEach(function (t) {
     const m = byName.get(t.name);
     if (!m || !hasValue(m.auc_vol_ratio)) return;
-    // ⛔ 只带这一列：resolution=merge-duplicates 只更新 payload 里出现的列，
-    //    绝不把 worker / 猫抓历史回填写好的其它字段抹掉（§11 覆盖即高风险）。
-    rows.push({
+    // ★ [FULLFIELDS 2026-11-19] 旧实现只带 auc_vol_ratio 一列 ⇒ 11-19 事故里已有行的
+    //   yest_volume / change_pct 全空却永远补不上（昨成交量列 / 当天涨幅列整天空白）。
+    //   现改为「量比 + 该行【当前为空】的 FULL_FIELDS 字段」：
+    //     · 只填空：t.existing 是写库前刚读的行快照（readMarketMetricsSnapshotFieldsForDate
+    //       已扩展到 FULL_FIELDS 全集），非空字段绝不出现在 payload ⇒ merge-duplicates 不会覆盖（§11）；
+    //     · 数据源仍是猫抓 daily_auc（yest_volume / change_pct 本来就是它的权威输出，
+    //       与 9:25 morning 整行写入同源同口径，⛔ 不引入同花顺）；
+    //     · 兼容：t.existing 缺失（旧调用方 / 测试直接手造 targets）⇒ 退回只补量比一列。
+    const existing = t.existing || null;
+    const row = {
       date: today,
       stock: t.name,
       scope: 'auction',
       auc_vol_ratio: m.auc_vol_ratio,
       updated_at: nowIso,
       updated_by: 'auto-fetch-worker',
-    });
+    };
+    // ⛔ 没有 existing（拿不到行内现状）⇒ 绝不敢写其它字段：只能补量比一列
+    //    （merge-duplicates 是 SET col=EXCLUDED.col，盲写会把 worker 已写好的值抹掉，§11）。
+    if (existing) {
+      FULL_FIELDS.forEach(function (k) {
+        if (k === 'auc_vol_ratio') return;               // 上面已带
+        if (hasValue(existing[k])) return;               // 行内已有值 ⇒ 绝不覆盖（§11）
+        if (hasValue(m[k])) row[k] = m[k];               // 猫抓确实给了值才带（空值不写库）
+      });
+    }
+    rows.push(row);
   });
   return rows;
 }
@@ -5700,12 +6121,30 @@ async function fillAucFromNumcat(env, today, ladder, logs) {
     logs.push('[ladder26] ❌ ' + out.error);
     return out;
   }
+  // ★★ [WL-CANDIDATES 2026-11-19] 把今日 auction_watchlist 正式成员也纳入候选（⛔ 失败不阻断）：
+  //   修复「metrics 0 行 + ladder 残缺 ⇒ symbols=0 ⇒ 谎报量比齐全」的时序盲区（11-19 实测）。
+  //   morning 整轮 403 / 超时失败时，metrics 一行都没有，但名单 9:25 已落库（含 code）——
+  //   名单成员就是这趟该补的对象。读失败只降级为「metrics 候选」，与旧行为一致。
+  let extraCandidates = [];
+  try {
+    const wl = await readAuctionWatchlistForDate(env, today);
+    extraCandidates = (wl || []).filter(function (r) {
+      return r && !r.obs_auto_added && /^\d{6}$/.test(String(r.code || '').trim());
+    });
+  } catch (e) {
+    logs.push('[ladder26] ⚠️ 读取当日 auction_watchlist 失败（候选退化为仅 metrics 行）: ' +
+      ((e && e.message) || String(e)));
+  }
   // ★ [RANGE20-RATIO-HEAL 2026-11-11] 打开「当日已有行但缺量比」的补抓（含 20 日补位票）。
   //   仍严格只在有缺口时才发 1 次请求；9:25 全抓全时 0 请求、0 猫抓额度（§32）。
-  const targets = pickNumcatTargets(ladder, metricsRows, { includeAllRows: true });
+  const targets = pickNumcatTargets(ladder, metricsRows, { includeAllRows: true, extraCandidates: extraCandidates });
   out.symbols = targets.symbols.length;
   if (targets.symbols.length === 0) {
-    out.skipped = '当日 9:25 名单竞价量比齐全 → 0 次猫抓请求';
+    // ★ [WL-CANDIDATES 2026-11-19] 日志必须如实区分「真齐全」与「根本没候选」——
+    //   11-19 的「量比齐全」就是一条掩盖了空转的假话（§10）。
+    out.skipped = targets.checked > 0
+      ? '当日 ' + targets.checked + ' 只候选竞价量比齐全 → 0 次猫抓请求'
+      : '当日无带 6 位 code 的候选（metrics 行与正式名单均为空）→ 0 次猫抓请求';
     logs.push('[ladder26] ✅ ' + out.skipped);
     return out;
   }
@@ -5946,8 +6385,18 @@ async function runLadderRecheck(env, opts) {
 
 
 
+
+
 /** 与 Edge WINDOW_DAYS-1 完全一致：19 根历史腿 + 1 根 T 腿 = 20 日 */
 const RANGE20_LEG_DAYS = 19;
+
+/** [FILL-START-BAR] 批量日线起点要比窗口首日早这么多自然日，才能拿到首日涨幅的基准 bar */
+const R20_FILL_BAR_LEAD_DAYS = 20;
+
+// ⚠️ 单文件打包共作用域 ⇒ 顶层名必须全局唯一（与 r20ShiftDays / r30ShiftDays 区分）
+function r20FillShiftDays(dateStr, delta) {
+  return new Date(Date.parse(dateStr + 'T00:00:00Z') + delta * 86400000).toISOString().slice(0, 10);
+}
 
 /** 腿表回看窗口（自然日）：足够跨过春节/国庆凑满 19 个交易日，与 Edge shiftYmd(-60) 一致 */
 const RANGE20_LOOKBACK_DAYS = 60;
@@ -5975,6 +6424,119 @@ function compoundRange20(hist, tLeg) {
 /** 北京 15:00 前 = 竞价口径(auc)，之后 = 收盘口径(close)——与 Edge 选腿、前端 resolveT20LegMode 同源 */
 function legModeOf(nowBj) {
   return nowBj.getUTCHours() < 15 ? 'auc' : 'close';
+}
+
+/**
+ * ★★ [LEGS-FILL-CLOUD 2026-11-20 用户报障] 「20 日涨幅有些票是空的，历史日期也有很多」
+ *
+ * 根因（生产实测，不是渲染 bug）：
+ *   `stock_daily_pct`（逐日腿缓存）**只覆盖「进过当天名单的票」**——
+ *   `daily-legs-heal.js` 从 `market_metrics` 取票，而 market_metrics 只有名单里的票。
+ *   于是**新面孔**（11-20 首次出现的京蓝科技 / 海立股份等）在腿表里只有 2~4 行，
+ *   远不足 `RANGE20_LEG_DAYS = 19` ⇒ 本函数一直判 `shortLegs` 一律不写
+ *   ⇒ 那只票的 20 日涨幅**永远是空白**（历史日同理：那天的新面孔全部缺）。
+ *   对照：有值的票（上海电影 38 行 / 世龙实业 31 行 / 东方海洋 38 行）腿是齐的。
+ *
+ * 修法：腿不够就**在云端现补腿**，用同花顺批量前复权日线（10 只/批）把
+ *   「19 个交易日里缺的那几根」写进 `stock_daily_pct`，再把 20 日涨幅算出来。
+ *   · 只补窗口内**确实缺**的 (date,stock)，已有腿一根都不碰（§11 纯加法、幂等）；
+ *   · `src='fuyao_kline'` 与云端 `metrics_close` / 本机 `metrics` 明确区分，事后可对账；
+ *   · 前复权口径与 `compute-range30-pct.mjs` / 前端 K 线补算完全一致（§6）；
+ *   · 分批 10 只 ⇒ 33 只只要 4 次 subrequest（⛔ 逐只打会顶爆 Cloudflare 50 次配额）。
+ *   · §10：拿不到就不写（⛔ 绝不补 0、绝不伪造腿），留给下一次幂等重跑。
+ *
+ * @param {object} env
+ * @param {{stocks:string[], tradeDates:string[], codeOf:Function, haveOf:Function,
+ *          logs?:string[], budgetMs?:number}} opts
+ * @returns {Promise<{ok:boolean, requested:number, fetched:number, written:number,
+ *          skipped:string, error:string, rows:Array}>}
+ */
+async function fillLegsFromKline(env, opts) {
+  const o = opts || {};
+  const logs = o.logs || [];
+  const stocks = Array.from(new Set((o.stocks || []).map(s => String(s || '').trim()).filter(Boolean)));
+  const tradeDates = (o.tradeDates || []).map(d => String(d || '').slice(0, 10))
+    .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+  const out = { ok: false, requested: 0, fetched: 0, written: 0, skipped: '', error: '', rows: [] };
+  if (stocks.length === 0 || tradeDates.length < RANGE20_LEG_DAYS) {
+    out.skipped = '待补票 ' + stocks.length + ' 只 / 交易日 ' + tradeDates.length +
+      ' 天（<' + RANGE20_LEG_DAYS + '）⇒ 不补';
+    return out;
+  }
+  const codeOf = typeof o.codeOf === 'function' ? o.codeOf : function () { return ''; };
+  const haveOf = typeof o.haveOf === 'function' ? o.haveOf : function () { return null; };
+  const codes = stocks.map(s => String(codeOf(s) || '')).filter(c => /^\d{6}$/.test(c));
+  if (codes.length === 0) {
+    out.skipped = '待补 ' + stocks.length + ' 只全部没有 6 位代码（stockcodemap 也查不到）⇒ 无法取日线';
+    logs.push('[legs-fill] ⚠️ ' + out.skipped);
+    return out;
+  }
+  out.requested = codes.length;
+
+  let bars;
+  try {
+    // 🔴 [FILL-START-BAR 2026-11-20 生产日志实锤] 起点必须【早于】窗口首日！
+    //   首日那根日涨幅 = 首日收盘 / 前一根 bar 收盘 − 1，接口只返回请求区间内的 bar
+    //   （不会白送更早的）⇒ 从窗口首日开始取会丢掉首日涨幅，19 根只补到 17~18 根，
+    //   `compoundRange20` 仍判腿不足。11-17 实测：补了 205 行却只写出 1 行 20 日涨幅、
+    //   覆盖度停在 86% —— 就是这个缺一根造成的整类失败。
+    //   前移 20 个自然日（≈14 个交易日，够跨一次小长假），⛔ 不省这一个请求。
+    bars = await fetchFuyaoBatchBars(
+      env, codes,
+      r20FillShiftDays(tradeDates[0], -R20_FILL_BAR_LEAD_DAYS),
+      tradeDates[tradeDates.length - 1]
+    );
+  } catch (e) {
+    out.error = '批量日线失败: ' + ((e && e.message) || e);
+    logs.push('[legs-fill] ❌ ' + out.error);
+    return out;
+  }
+  out.fetched = bars.size;
+
+  const nowIso = new Date().toISOString();
+  const rows = [];
+  for (let i = 0; i < stocks.length; i++) {
+    const s = stocks[i];
+    const code = String(codeOf(s) || '');
+    if (!/^\d{6}$/.test(code)) continue;
+    const b = bars.get(code);
+    if (!b || b.length === 0) continue;
+    const pctMap = barsToDailyPctMap(b);
+    const have = haveOf(s);
+    for (let k = 0; k < tradeDates.length; k++) {
+      const d = tradeDates[k];
+      if (have && typeof have.has === 'function' && have.has(d)) continue;
+      const p = pctMap.get(d);
+      if (!isFinite(p)) continue;                       // §10 取不到就不写，⛔ 不当 0%
+      rows.push({
+        date: d,
+        stock: s,
+        pct: (p < 0 ? '' : '+') + p.toFixed(2),
+        src: 'fuyao_kline',
+        updated_at: nowIso
+      });
+    }
+  }
+  if (rows.length === 0) {
+    out.ok = true;
+    out.skipped = '批量日线取到 ' + bars.size + '/' + codes.length +
+      ' 只，但 19 个交易日里没有可补的新腿';
+    logs.push('[legs-fill] ✅ ' + out.skipped);
+    return out;
+  }
+  try {
+    await upsertDailyPctRows(env, rows);
+  } catch (e) {
+    out.error = '写 stock_daily_pct 失败: ' + ((e && e.message) || e);
+    logs.push('[legs-fill] ❌ ' + out.error);
+    return out;
+  }
+  out.written = rows.length;
+  out.rows = rows;
+  out.ok = true;
+  logs.push('[legs-fill] ✅ 同花顺批量日线补腿 ' + rows.length + ' 行（' +
+    out.fetched + '/' + codes.length + ' 只取到，src=fuyao_kline）');
+  return out;
 }
 
 /** 纯函数：把腿表扁平行按股票归集成升序数值腿（坏值跳过，不折 0） */
@@ -6016,7 +6578,10 @@ async function runRange20Prefill(env, opts) {
   const leg = o.leg || legModeOf(beijingNow());
   const out = {
     ok: false, today: today, leg: leg, targets: 0, covered: 0, need: 0,
-    written: 0, shortLegs: 0, noTLeg: 0, skipped: '', error: '', logs: logs
+    written: 0, shortLegs: 0, noTLeg: 0, skipped: '', error: '', logs: logs,
+    // ★★ [LEGS-FILL-CLOUD 2026-11-20] 补腿留痕（验收用，⛔ 别只看 ok）
+    shortBefore: 0,
+    legsFill: null
   };
 
   // ① 今日名单（正式成员 + 观察组）与今日行情（T 腿）。§10：任一读取失败立即停，不写任何行。
@@ -6095,7 +6660,68 @@ async function runRange20Prefill(env, opts) {
     logs.push('[r20-prefill] ❌ ' + out.error);
     return out;
   }
-  const legs = groupLegs(legRows);
+  let legs = groupLegs(legRows);
+
+  // ★★ [LEGS-FILL-CLOUD 2026-11-20] 腿不足 19 根 ⇒ 云端现补（这才是「新面孔 / 历史日空白」的根因修法）。
+  //   顺序不能反：必须先有腿，下面的复利才算得出来。
+  //   `o.fillLegs === false` 时跳过（给纯读场景 / 单测用，不产生上游请求）。
+  const shortList = need.filter(function (s) {
+    const hist = legs.get(s);
+    return !hist || hist.length < RANGE20_LEG_DAYS;
+  });
+  out.shortBefore = shortList.length;
+  out.legsFill = null;
+  if (shortList.length > 0 && o.fillLegs !== false) {
+    let tradeDates = [];
+    try {
+      // 交易日来源必须是 market_metrics（§已固化）：⛔ 不能拿 auction_watchlist.date
+      // （国庆每天被写进 11 行垃圾）。want=19 = 19 根历史腿，不含 today 本身。
+      tradeDates = await readRecentTradeDates(env, today, RANGE20_LEG_DAYS);
+    } catch (e) {
+      logs.push('[legs-fill] ⚠️ 读交易日序列失败（本轮不补腿，留给下一趟）: ' +
+        ((e && e.message) || e));
+      tradeDates = [];
+    }
+    if (tradeDates.length >= RANGE20_LEG_DAYS) {
+      // code：market_metrics 的 code 是真值（9:25 主流程写入）；没有再回退一份名称索引。
+      const codeByStock = new Map();
+      metrics.forEach(function (r) {
+        if (!r || !r.name) return;
+        const c = String(r.code || '').replace(/\D/g, '');
+        if (c.length === 6) codeByStock.set(r.name, c);
+      });
+      // 已有腿集合（按股票）⇒ 只补缺的那几天，已有腿一根都不碰。
+      const haveByStock = new Map();
+      legRows.forEach(function (r) {
+        if (!r || !r.stock || !r.date) return;
+        let set = haveByStock.get(r.stock);
+        if (!set) { set = new Set(); haveByStock.set(r.stock, set); }
+        set.add(String(r.date).slice(0, 10));
+      });
+      const fill = await fillLegsFromKline(env, {
+        stocks: shortList,
+        tradeDates: tradeDates,
+        codeOf: function (s) { return codeByStock.get(s) || ''; },
+        haveOf: function (s) { return haveByStock.get(s) || null; },
+        logs: logs,
+        budgetMs: (o.budgetMs === undefined ? CONFIG.BARS_FILL_BUDGET_MS : o.budgetMs)
+      });
+      out.legsFill = {
+        requested: fill.requested, fetched: fill.fetched, written: fill.written,
+        skipped: fill.skipped, error: fill.error
+      };
+      if (fill.written > 0) {
+        // 合并后重新归集：groupLegs 会按日期升序排好，compoundRange20 再取最后 19 根。
+        legs = groupLegs(legRows.concat(fill.rows.map(function (r) {
+          return { stock: r.stock, date: r.date, pct: r.pct };
+        })));
+      }
+    } else if (tradeDates.length > 0) {
+      logs.push('[legs-fill] ⚠️ 交易日仅 ' + tradeDates.length + ' 天（<' + RANGE20_LEG_DAYS +
+        '）⇒ 本轮不补腿');
+    }
+  }
+
   const nowIso = new Date().toISOString();
   const rows = [];
   need.forEach(function (s) {
@@ -6111,8 +6737,7 @@ async function runRange20Prefill(env, opts) {
       leg: leg,
       updated_at: nowIso
     });
-  });
-  if (rows.length === 0) {
+  });  if (rows.length === 0) {
     out.ok = true;
     out.skipped = '待补 ' + need.length + ' 只，但腿不足 ' + RANGE20_LEG_DAYS + ' 根的有 ' +
       out.shortLegs + ' 只 ⇒ 一只都不写（宁缺勿错）';
@@ -6133,6 +6758,14 @@ async function runRange20Prefill(env, opts) {
   logs.push('[r20-prefill] ✅ ' + today + ' leg=' + leg + ' 云端补缺 ' + rows.length + ' 行' +
     '（目标 ' + out.targets + ' / 已有 ' + out.covered + ' / 缺T腿 ' + out.noTLeg +
     ' / 腿不足 ' + out.shortLegs + ' / 读腿 ' + legRows.length + ' 行；0 上游请求、0 猫抓额度）');
+  // ★ [LEGS-FILL-CLOUD 2026-11-20] 补腿必须可观测：这是「新面孔 20 日涨幅空白」的唯一证据链。
+  if (out.legsFill) {
+    logs.push('[r20-prefill] 腿不足 ' + out.shortBefore + ' 只 ⇒ 云端批量补腿 ' +
+      (out.legsFill.written || 0) + ' 行（取到 ' + (out.legsFill.fetched || 0) + '/' +
+      (out.legsFill.requested || 0) + ' 只' +
+      (out.legsFill.skipped ? ' / ' + out.legsFill.skipped : '') +
+      (out.legsFill.error ? ' / ❌ ' + out.legsFill.error : '') + '）');
+  }
   // [CLOUD-0927-HEAL 2026-11-11] 覆盖度必须可观测：低于 80% 时前端买点闸门会拒绝定稿，
   //   若不在这里点名，事后只能靠猜「为什么当天没出票」。9:27 会再补一次。
   const finalCovered = out.covered + rows.length;
@@ -6141,6 +6774,704 @@ async function runRange20Prefill(env, opts) {
     ' = ' + (finalCoverage * 100).toFixed(0) + '%' +
     (finalCoverage < 0.8 ? ' ⚠️ 未达 80% ⇒ 9:27 将再补一次；前端买点闸门暂不定稿' : ' ✅ 达标'));
   return out;
+}
+
+
+// ────── ../src/logic/auction/range30-math.js ──────
+// range30-math.js — 「30日涨幅」的**纯计算**（Logic 层，§6 单一真相 / §15 可单测）
+//
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 为什么单独拆这个文件（2026-11-18 用户口径「要云端运行」）
+// ══════════════════════════════════════════════════════════════════════════════════════
+//   30 日涨幅原来只有前端一份实现（range30.js），而那份文件顶部 import 了 vue / Supabase
+//   ⇒ Cloudflare Worker（workers/bidding-auto-fetch）**不能 import 它**（会把浏览器依赖打进 worker）。
+//   结果就是：这份数值只能靠「用户手机上的浏览器」现打腾讯接口现算 ——
+//     一旦手机网络到不了腾讯（或腾讯 WAF 收口），整列就空白，且关掉电脑/换设备都救不回来。
+//   ⇒ 把**数学部分**（窗口构造 / 停牌等价取值 / 一次性比值）抽到这里：零 import、纯函数。
+//     · 前端 `range30.js`   → import 本文件（日历由它自己出）
+//     · 云端 `range30-cloud.js` → 直接 import 本文件（日历由 worker 的交易日历出）
+//   ⛔ 任何一处算 30 日涨幅的地方都必须走这里，别再复制第二份公式。
+//
+// ── 口径（用户拍板，⛔ 别改回逐日连乘）────────────────────────────────────────────────
+//   N 日区间涨幅 = 期末收盘价 / 期初前收盘价 − 1。
+//   数学上与逐日复利连乘完全等价（中间项全部约掉），但少一层「逐日两位小数」的舍入误差。
+//   实测：新华传媒 600825（10-28，窗口 09-09~10-28）5.31 → 14.81 = **+178.91%**，两法一致。
+//
+// ── 窗口 ────────────────────────────────────────────────────────────────────────────
+//   含 asOf 在内往前数 30 个【交易日】；baseDate = 窗口首日的【前一个交易日】。
+//   停牌等价：取「≤ 目标日的最后一个 bar」（停牌期间前收盘不变）。
+//   ⛔ 次新股（上市日在窗口内）取不到 baseBar ⇒ 不出值（绝不拿上市首日凑数）。
+//
+// ── 红线 ────────────────────────────────────────────────────────────────────────────
+//   §10 算不出 ⇒ **null**（⛔ 绝不补 0）：次新股 / 窗口内有成交的腿数不足 / 缺基准价或期末价。
+
+/** 窗口长度：含当天在内的 30 个交易日 */
+const RANGE30_WINDOW_DAYS = 30;
+
+/**
+ * 可信门槛：窗口内至少这么多根成交腿才算得出可信的 30 日涨幅。
+ * 与二十日门槛同比例（RANGE20 是 6/20 = 30%）⇒ 30 日对应 10/30 ≈ 33%。
+ * ⚠️ 别拍脑袋调大：长期停牌的票（实测新华传媒 30 日窗口内只有 19 根腿）必须仍能出值。
+ */
+const RANGE30_MIN_LEGS = 10;
+
+const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * 【纯函数】K 线标准化：只留 close>0 的合法 bar，按日期升序、同日去重（后者优先）
+ * @param {Array<{ymd:string, close:number}>} bars
+ * @returns {Array<{ymd:string, close:number}>}
+ */
+function normalizeBars(bars) {
+  const byDate = new Map();
+  (bars || []).forEach(function (b) {
+    if (!b) return;
+    const ymd = String(b.ymd || '').slice(0, 10);
+    if (!YMD_RE.test(ymd)) return;
+    const close = Number(b.close);
+    if (!isFinite(close) || close <= 0) return;
+    byDate.set(ymd, { ymd: ymd, close: close });
+  });
+  return Array.from(byDate.values()).sort(function (a, b) {
+    return a.ymd < b.ymd ? -1 : (a.ymd > b.ymd ? 1 : 0);
+  });
+}
+
+/** 【纯函数】取「≤ ymd 的最后一个 bar」（停牌期间前收盘不变 ⇒ 等价于当日收盘） */
+function barOnOrBefore(series, ymd) {
+  if (!ymd || !Array.isArray(series)) return null;
+  let out = null;
+  for (let i = 0; i < series.length; i++) {
+    if (series[i].ymd <= ymd) out = series[i];
+    else break;
+  }
+  return out;
+}
+
+/**
+ * 【纯函数】用**调用方给的交易日序列**构造窗口（日历是入参，不在本文件里读任何数据源）。
+ *
+ * @param {string[]} tradingDays 升序交易日（至少含 asOf 之前的 30 个）；允许含 asOf 之后的日期
+ * @param {string} asOf 窗口末日
+ * @param {number} [n] 窗口交易日数，默认 30
+ * @returns {{dates:string[], start:string, end:string, baseDate:string}|null}
+ *          end = ≤ asOf 的最后一个交易日（asOf 非交易日自动退到最近交易日）
+ *          baseDate = 窗口首日的前一个交易日；历史尽头取不到 ⇒ ''
+ */
+function windowFromTradingDays(tradingDays, asOf, n) {
+  const want = Math.max(1, Number(n) || RANGE30_WINDOW_DAYS);
+  const end = String(asOf || '').slice(0, 10);
+  if (!YMD_RE.test(end)) return null;
+  const days = (tradingDays || []).filter(function (d) {
+    return YMD_RE.test(String(d || ''));
+  }).map(function (d) { return String(d).slice(0, 10); });
+  if (days.length < want) return null;
+  // 升序假定：调用方（前端交易日历 / worker getRecentTradingDays）都保证
+  let endIdx = -1;
+  for (let i = 0; i < days.length; i++) {
+    if (days[i] <= end) endIdx = i;
+    else break;
+  }
+  if (endIdx < 0) return null;
+  const startIdx = endIdx - want + 1;
+  if (startIdx < 0) return null;
+  const baseIdx = startIdx - 1;
+  return {
+    dates: days.slice(startIdx, endIdx + 1),
+    start: days[startIdx],
+    end: days[endIdx],
+    baseDate: baseIdx >= 0 ? days[baseIdx] : ''
+  };
+}
+
+/**
+ * 【纯函数】在已构造好的窗口里算 30 日涨幅（一次性比值）。
+ *
+ * @param {Array<{ymd:string, close:number}>} bars 该票日 K（任意顺序；内部会标准化）
+ * @param {{dates:string[], start:string, end:string, baseDate:string}} win
+ * @param {{minLegs?:number}} [opts]
+ * @returns {{pct:number, days:number, start:string, end:string,
+ *            baseDate:string, baseClose:number, endDate:string, endClose:number}|null}
+ *          null = 判不出（§10：次新股 / 腿数不足 / 缺基准价，⛔ 一律不补 0）
+ */
+function range30InWindow(bars, win, opts) {
+  if (!win || !win.baseDate || !win.start || !win.end) return null;
+  const o = opts || {};
+  const series = normalizeBars(bars);
+  if (series.length === 0) return null;
+
+  const endBar = barOnOrBefore(series, win.end);
+  const baseBar = barOnOrBefore(series, win.baseDate);
+  // ① 拿不到基准 / 期末价 ⇒ 判不出。
+  //   ★ 次新股天然落在这里：它的 K 线从上市日开始，`barOnOrBefore(baseDate)` 找不到任何 bar
+  //     ⇒ baseBar=null ⇒ 直接不出值。⛔ 绝不拿「上市首日」当 30 日前的基准凑数（那不是 30 日涨幅）。
+  if (!endBar || !baseBar) return null;
+  // ② 期初与期末是同一根 bar（区间内完全没有成交）⇒ 判不出（⛔ 不返回 0%）
+  if (endBar.ymd <= baseBar.ymd) return null;
+
+  // ③ 腿数门槛：窗口内实际有成交的根数（停牌 / 次新股会 < 30）
+  let legs = 0;
+  for (let i = 0; i < series.length; i++) {
+    const d = series[i].ymd;
+    if (d >= win.start && d <= win.end) legs++;
+  }
+  const minLegs = (o.minLegs === undefined || o.minLegs === null) ? RANGE30_MIN_LEGS : Number(o.minLegs);
+  if (isFinite(minLegs) && minLegs > 0 && legs < minLegs) return null;
+
+  const pct = (endBar.close / baseBar.close - 1) * 100;
+  if (!isFinite(pct)) return null;
+  return {
+    pct: pct,
+    days: legs,
+    start: win.start,
+    end: win.end,
+    baseDate: baseBar.ymd,
+    baseClose: baseBar.close,
+    endDate: endBar.ymd,
+    endClose: endBar.close
+  };
+}
+
+
+// ────── bidding-auto-fetch/logic/range30-fill.js ──────
+// range30-fill.js — 北京 09:26 / 09:27 / 16:03 云端补「当天名单」的 30 日涨幅
+//
+// ============================================================================
+// [R30-CLOUD 2026-11-20 用户报障] 「30 日涨幅 toggle 有些股票后面的数值没有显示，空的」
+// ----------------------------------------------------------------------------
+// 生产取证（不是渲染 bug，是**数据供给缺口**）：
+//   30 日涨幅原来只由 GitHub Actions `compute-range30-pct.mjs` 写。它的定时并不可靠：
+//     cron 配的是北京 09:28 / 16:45 / 18:30，实测跑在 **北京 01:43 / 03:07 / 02:59**，
+//     而且经常丢 —— 11-20 当天那三趟【一趟都没跑】。
+//   凌晨那几趟跑的时候，当天的 `auction_watchlist` 还没生成（9:25 才写）⇒ 日志原文
+//     「候选池 2026-09-17~2026-11-20（近 40 个交易日名单）」+「交易日历最新 2026-11-19」
+//   ⇒ 候选池退化成「历史名单」，**当天首次出现的票整天没有 30 日涨幅**。
+//   11-20 实测：京蓝科技 / 华升股份 / 格林达 / 江化微 / 海立股份 5 只全空，其余 492 行有值。
+//   而这 5 只在同花顺批量日线里**都能拿到 42 根 bar**（含 11-20）⇒ 上游没问题，是漏算。
+//
+// 分工（⛔ 别让两边重复算同一批票，也别把 Worker 的 50 次 subrequest 配额顶爆）：
+//   · 本模块 = **当天名单 ∪ 当天行情**里的票（实测 33 只 ⇒ 同花顺批量 4 次请求）；
+//     ⇒ 专治「今天新冒出来的票」。
+//   · Actions `compute-range30-pct.mjs` = 近 40 个交易日宽池（约 500 只），
+//     ⇒ 专治「30天/20天补位、龙头组」这些**不在当天名单**的注入行。
+//   两边都是幂等 upsert（主键 date,stock,leg），重叠部分算出同一个值。
+//
+// 口径（⛔ 不在这里另写公式，import `src/logic/auction/range30-math.js`）：
+//   · 30 日涨幅 = 期末收盘 / 期初前收盘 − 1（一次性比值，与逐日连乘数学等价）；
+//   · 停牌等价：取「≤ 目标日的最后一根 bar」；次新 / 腿数 < 10 一律判不出（§10 不补 0）。
+//
+// 两个时点两种窗口（与 Actions 的 09:28 / 16:45 完全同口径）：
+//   · 开盘前（9:26 / 9:27）：end = **昨天**收盘 ⇒ 写「截至昨收」，前端反解竞价口径即可用；
+//   · 收盘后（16:03）：end = **今天**收盘 ⇒ 覆盖成当天真实收盘口径。
+//
+// §10 读取失败立即停、不写；§11 只 upsert 本轮真算出来的行，算不出绝不写空。
+// ============================================================================
+
+
+
+
+
+/** 拉日线时向前多留的自然日（要拿到 baseDate 那根 bar，长假也够） */
+const R30_BAR_BUFFER_DAYS = 20;
+
+/** 单趟最多补多少只（33 只 = 4 批；上限只是防止有人传进来几百只把配额打穿） */
+const R30_MAX_STOCKS = 80;
+
+// ⚠️ 单文件打包共作用域 ⇒ 顶层名必须全局唯一（_bundle.mjs 会体检拦截）
+function r30ShiftDays(dateStr, delta) {
+  return new Date(Date.parse(dateStr + 'T00:00:00Z') + delta * 86400000).toISOString().slice(0, 10);
+}
+
+/** 北京 15:00 后 = 当天已有收盘价（允许把 today 当窗口末日） */
+function r30IsAfterClose(nowBj) {
+  return nowBj.getUTCHours() > 15 || (nowBj.getUTCHours() === 15 && nowBj.getUTCMinutes() >= 5);
+}
+
+/**
+ * 云端补「当天名单」的 30 日涨幅。
+ *
+ * @param {object} env
+ * @param {{date?:string, overwrite?:boolean, endAtDate?:boolean, logs?:string[], maxStocks?:number}} opts
+ *   - date      目标日（默认北京今天）
+ *   - overwrite true = 重算并覆盖当天已有行（16:03 收盘口径必须开；09:26 必须关）
+ *   - endAtDate true = 窗口末日取 date 当天（收盘后）；false = 取 date 之前最后一个交易日（开盘前）
+ * @returns {Promise<{ok:boolean,date:string,leg:string,targets:number,covered:number,need:number,
+ *   computed:number,written:number,noBars:number,failed:number,skipped:string,error:string,logs:string[]}>}
+ */
+async function runRange30Fill(env, opts) {
+  const o = opts || {};
+  const logs = o.logs || [];
+  const date = o.date || beijingToday();
+  const endAtDate = o.endAtDate === undefined ? r30IsAfterClose(beijingNow()) : !!o.endAtDate;
+  const out = {
+    ok: false, date: date, leg: 'close', targets: 0, covered: 0, need: 0,
+    computed: 0, written: 0, noBars: 0, failed: 0, skipped: '', error: '', logs: logs
+  };
+
+  // ① 当天名单 + 当天行情（code 的真值在这两处）
+  let wl, metrics;
+  try {
+    wl = await readAuctionWatchlistForDate(env, date);
+    metrics = await readMarketMetricsForDate(env, date, 'auction');
+  } catch (e) {
+    out.error = '读取当日名单/行情失败: ' + ((e && e.message) || e);
+    logs.push('[r30-fill] ❌ ' + out.error);
+    return out;
+  }
+  const codeByStock = new Map();
+  metrics.forEach(function (r) {
+    if (!r || !r.name) return;
+    const c = String(r.code || '').replace(/\D/g, '');
+    if (c.length === 6) codeByStock.set(r.name, c);
+  });
+  const targets = Array.from(new Set(
+    wl.map(r => r.name).concat(metrics.map(r => r.name)).filter(Boolean)
+  ));
+  out.targets = targets.length;
+  if (targets.length === 0) {
+    out.skipped = '当日名单与行情都为空 ⇒ 不写（§10 不把「读不到」当成「没有票」）';
+    logs.push('[r30-fill] ⚠️ ' + out.skipped);
+    return out;
+  }
+
+  // ② 已有行（09:26 一律不覆盖；16:03 才允许重算覆盖）
+  let have = new Set();
+  try {
+    have = await readRange30StocksForDate(env, date);
+  } catch (e) {
+    out.error = '读取 stock_range30_pct 失败: ' + ((e && e.message) || e);
+    logs.push('[r30-fill] ❌ ' + out.error);
+    return out;
+  }
+  targets.forEach(function (s) { if (have.has(s)) out.covered++; });
+  const need = o.overwrite ? targets.slice() : targets.filter(function (s) { return !have.has(s); });
+  out.need = need.length;
+  if (need.length === 0) {
+    out.ok = true;
+    out.skipped = '当天 ' + targets.length + ' 只云端已全覆盖 ⇒ 0 写入';
+    logs.push('[r30-fill] ✅ ' + out.skipped);
+    return out;
+  }
+
+  // ③ 交易日历（market_metrics 的日期是真值；⛔ 不用 auction_watchlist.date）
+  //   要 30 个交易日窗口 + 1 个基准日 ⇒ 至少 31 天；多取 2 天留余量。
+  let cal;
+  try {
+    cal = await readRecentTradeDates(env, date, RANGE30_WINDOW_DAYS + 2);
+  } catch (e) {
+    out.error = '读取交易日序列失败: ' + ((e && e.message) || e);
+    logs.push('[r30-fill] ❌ ' + out.error);
+    return out;
+  }
+  const calUse = endAtDate ? cal.concat([date]) : cal;
+  const win = windowFromTradingDays(calUse, date, RANGE30_WINDOW_DAYS);
+  if (!win || !win.baseDate) {
+    out.ok = true;
+    out.skipped = '交易日序列仅 ' + cal.length + ' 天，构造不出 30 日窗口 ⇒ 本趟不写';
+    logs.push('[r30-fill] ⚠️ ' + out.skipped);
+    return out;
+  }
+
+  // ④ 批量取日线（10 只/批）→ 逐只套用同一份纯函数
+  const limited = need.slice(0, Math.max(1, Number(o.maxStocks) || R30_MAX_STOCKS));
+  const codes = [];
+  const noCode = [];
+  limited.forEach(function (s) {
+    const c = codeByStock.get(s) || '';
+    if (/^\d{6}$/.test(c)) codes.push(c); else noCode.push(s);
+  });
+  if (codes.length === 0) {
+    out.ok = true;
+    out.skipped = '待补 ' + limited.length + ' 只全部没有 6 位代码 ⇒ 无法取日线';
+    logs.push('[r30-fill] ⚠️ ' + out.skipped);
+    return out;
+  }
+  let bars;
+  try {
+    bars = await fetchFuyaoBatchBars(
+      env, codes,
+      r30ShiftDays(win.start, -R30_BAR_BUFFER_DAYS),
+      win.end
+    );
+  } catch (e) {
+    out.error = '批量日线失败: ' + ((e && e.message) || e);
+    logs.push('[r30-fill] ❌ ' + out.error);
+    return out;
+  }
+
+  const nowIso = new Date().toISOString();
+  const rows = [];
+  let noBars = 0, undecidable = 0;
+  limited.forEach(function (s) {
+    const c = codeByStock.get(s) || '';
+    if (!/^\d{6}$/.test(c)) { out.failed++; return; }
+    const b = bars.get(c);
+    if (!b || b.length === 0) { noBars++; return; }
+    const got = range30InWindow(b, win, {});
+    if (!got) { undecidable++; return; }
+    rows.push({
+      date: date,
+      stock: s,
+      pct: got.pct.toFixed(2),
+      days: got.days,
+      leg: 'close',
+      updated_at: nowIso
+    });
+  });
+  out.noBars = noBars;
+  if (rows.length === 0) {
+    out.ok = true;
+    out.skipped = '待补 ' + limited.length + ' 只：无日线 ' + noBars + ' / 判不出 ' + undecidable +
+      '/ 无代码 ' + noCode.length + ' ⇒ 一只都不写（§10 宁缺勿错）';
+    logs.push('[r30-fill] ⚠️ ' + out.skipped);
+    return out;
+  }
+
+  // ⑤ 一次分桶 upsert（键集一致，⛔ 不会 PGRST102）
+  try {
+    await upsertRange30Rows(env, rows);
+  } catch (e) {
+    out.error = 'stock_range30_pct 写入失败: ' + ((e && e.message) || e);
+    logs.push('[r30-fill] ❌ ' + out.error);
+    return out;
+  }
+  out.computed = rows.length;
+  out.written = rows.length;
+  out.ok = true;
+  logs.push('[r30-fill] ✅ ' + date + ' 云端补 30 日涨幅 ' + rows.length + ' 行（窗口 ' +
+    win.start + '~' + win.end + '，基准 ' + win.baseDate +
+    '；目标 ' + out.targets + ' 已有 ' + out.covered + ' 待补 ' + out.need +
+    ' 取价 ' + bars.size + '/' + codes.length + ' 只' +
+    (noBars ? ' 无日线 ' + noBars : '') + (undecidable ? ' 判不出 ' + undecidable : '') +
+    '；' + (o.overwrite ? '覆盖模式' : '只填空') + '）');
+  return out;
+}
+
+
+// ────── bidding-auto-fetch/logic/inject-metrics-heal.js ──────
+// inject-metrics-heal.js — 「补位票」历史行情行云端补建 / 补字段（runInjectedMetricsBackfill）
+//
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户口径（2026-11-23 原话）
+// ══════════════════════════════════════════════════════════════════════════════════════
+//   「今天不能重补下30日强势补位票的数据吗？也就是那两只，现在数据只有三个，趋势图也是几乎空白的，能补吗？」
+//
+// 【为什么补得动 —— 真实库取证（2026-11-23，只读）】
+//   百洋股份 002696 / 慈文传媒 002343（当日「30日强势补位」两只）：
+//     · 11-17~11-20 在 market_metrics 里**一行都没有**（不是字段空，是没行）⇒ 五日趋势图整段空白；
+//     · 11-23 只有 ths-patch 写的 volume + auc_pct_chg + auc_turnover，
+//       auc_vol_ratio / yest_volume / change_pct / um_vol / open_bid_pct 全 null；
+//     · 对照：它们 11-10~11-13 的行（source='worker'，猫抓写的）九列齐全、量比 2.9~7.2。
+//   ⇒ 「补得回来」的关键证据在 `morning-workflow.js` 里那条实测注记：
+//     「8/07 起的每个历史日，四要素都是在【后续几天的窗口重刷】时才出现的」
+//     ⇒ 猫抓 `daily_auc` 的 startdate~enddate **对历史日是会给值的**（不是只给当天）。
+//   所以：一次猫抓区间请求就能把这几天的竞价量 / 竞价涨幅 / 量比 / 四要素一起拿回来；
+//   历史日的「涨幅」用同花顺批量日线算（免费、0 猫抓额度），不再多烧一次额度。
+//
+// 【与既有两条链路的分工（⛔ 别互相抢活）】
+//   ① `runAuctionExtrasPatch`（point=extras）：只补**已存在行**的四要素/竞价涨幅 —— 补不了「没行」；
+//   ② `runTodaySnapshotPatch`（point=snapshot）：只用同花顺快照补**当天**，且按口径不碰量比；
+//   ③ 本文件：专治**补位票整行缺失**（历史日新建行）+ 顺手补字段。三者字段口径完全一致。
+//
+// 【红线】
+//   §1  竞价量比只认猫抓 —— 本文件量比唯一来源 `daily_auc.auc_vol_ratio`，⛔ 不用任何同花顺字段顶替；
+//       ⚠️ 同花顺 K 线腿**只用来算 change_pct（日涨幅）**，绝不参与竞价字段。
+//   §6  ⛔ 只写 `market_metrics`；不碰 `auction_watchlist`（当日名单仍 = 9:25 快照）、
+//       不写 `stock_range*`、不改任何选股规则。
+//   §10 读失败必须抛错（⛔ 不返回 []，否则会被当成「全缺」而重复新建/覆盖）；
+//       猫抓某天没给值 ⇒ 那一天就不建行（⛔ 不写空行冒充「有数据」）。
+//   §11 只补「库内为空」的字段、只新建「库里确实没有」的行；已有非空值一个都不覆盖（幂等）。
+//
+// 【额度】
+//   · 1 次猫抓 `daily_auc`（区间覆盖整个窗口）。
+//   · 同花顺批量日线：0 猫抓额度（10 只/批）。
+
+
+
+
+
+
+/** 与早盘 worker 完全相同的九个竞价字段（键集一致才好分桶） */
+const R30BF_FIELDS = ['volume', 'yest_volume', 'change_pct', 'auc_pct_chg',
+  'um_vol', 'open_bid_pct', 'auc_vol_ratio', 'auc_turnover'];
+/** 默认回看交易日数：五日趋势 + 1 天冗余（趋势面板取 5 列） */
+const R30BF_DEFAULT_DAYS = 6;
+/** 取日涨幅的批量日线起点前移（需要一根「窗口首日之前的 bar」当基准，跨长假也够） */
+const R30BF_BAR_LEAD_DAYS = 20;
+
+function r30bfIsEmpty(v) {
+  return v === null || v === undefined || String(v).trim() === '';
+}
+
+/** 'YYYY-MM-DD' 平移 N 个自然日（纯函数，不依赖交易日历） */
+function r30bfShiftDays(ymd, delta) {
+  const s = String(ymd || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const ms = Date.parse(s + 'T00:00:00Z') + delta * 86400000;
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/** 涨幅数值 → worker 口径字符串（'+X.XX%' / '-X.XX%'） */
+function r30bfPctStr(n) {
+  const x = Number(n);
+  if (!isFinite(x)) return '';
+  return (x >= 0 ? '+' : '') + x.toFixed(2) + '%';
+}
+
+/**
+ * 云端补建 / 补字段「补位票」的历史竞价行。
+ *
+ * @param {object} env
+ * @param {object} [opts]
+ *   · logs?: string[]              日志收集数组
+ *   · date?: string                目标日（默认北京今天）；窗口末日 = 该日或之前最近的交易日
+ *   · days?: number                回看交易日数（默认 6）
+ *   · stocks?: string[]            只补这些股票名（默认 = 前一交易日 30 日榜前 50 ∪ 20 日榜前 25）
+ * @returns {Promise<{ok:boolean, date:string, dates:string[], targets:number,
+ *   created:number, filled:number, skipped:number, logs:string[]}>}
+ */
+async function runInjectedMetricsBackfill(env, opts) {
+  const o = opts || {};
+  const logs = o.logs || [];
+  const wantDate = String(o.date || '').trim() || beijingToday();
+  const days = Number(o.days) > 0 ? Math.floor(Number(o.days)) : R30BF_DEFAULT_DAYS;
+  logs.push('[r30backfill] 补位票历史行情行补建开始 date=' + wantDate + ' days=' + days);
+
+  // ── 1. 交易日窗口（与早盘/收盘同一份日历，§6） ──────────────────────────────
+  let window = [];
+  try {
+    window = await getRecentTradingDays(env, wantDate, days);
+  } catch (e) {
+    logs.push('[r30backfill] ❌ 交易日历获取失败: ' + ((e && e.message) || e));
+    return { ok: false, date: wantDate, dates: [], targets: 0, created: 0, filled: 0, skipped: 0, logs };
+  }
+  window = (window || []).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+  if (window.length === 0) {
+    logs.push('[r30backfill] ⚠️ 无可用交易日，跳过');
+    return { ok: false, date: wantDate, dates: [], targets: 0, created: 0, filled: 0, skipped: 0, logs };
+  }
+  const lastDay = window[window.length - 1];
+  const prevDay = window.length >= 2 ? window[window.length - 2] : null;
+  logs.push('[r30backfill] 窗口 ' + window[0] + '~' + lastDay + '（' + window.length + ' 天），前一交易日=' + (prevDay || '—'));
+
+  // ── 2. 目标票：默认「前一交易日的 30 日补位榜 + 20 日补位榜」 ─────────────────
+  //    ⚠️ 用【前一交易日】的榜而不是当天：当天榜要等收盘后才算得出（与 9:25 抓取名单同一条口径）。
+  let names = Array.isArray(o.stocks) ? o.stocks.map(s => String(s || '').trim()).filter(Boolean) : [];
+  if (names.length === 0 && prevDay) {
+    const settled = async function (p) { try { return { ok: true, v: await p }; } catch (e) { return { ok: false, e: e }; } };
+    const [r30Res, r20Res] = await Promise.all([
+      settled(readRange30TopForDate(env, prevDay, 50)),
+      settled(readRange20TopForDate(env, prevDay, 25))
+    ]);
+    if (r30Res.ok) {
+      (r30Res.v || []).forEach(r => { if (r && r.name) names.push(r.name); });
+      logs.push('[r30backfill] 30日补位榜(' + prevDay + ') 取前 ' + (r30Res.v || []).length + ' 名');
+    } else {
+      logs.push('[r30backfill] ⚠️ 读 30 日榜失败: ' + ((r30Res.e && r30Res.e.message) || r30Res.e));
+    }
+    if (r20Res.ok) {
+      (r20Res.v || []).forEach(r => { if (r && r.name) names.push(r.name); });
+      logs.push('[r30backfill] 20日补位榜(' + prevDay + ') 取前 ' + (r20Res.v || []).length + ' 名');
+    } else {
+      logs.push('[r30backfill] ⚠️ 读 20 日榜失败: ' + ((r20Res.e && r20Res.e.message) || r20Res.e));
+    }
+  }
+  names = Array.from(new Set(names));
+  if (names.length === 0) {
+    logs.push('[r30backfill] ⚠️ 没有目标票（榜单为空且未指定 stocks），跳过');
+    return { ok: false, date: lastDay, dates: window, targets: 0, created: 0, filled: 0, skipped: 0, logs };
+  }
+  logs.push('[r30backfill] 目标票 ' + names.length + ' 只');
+
+  // ── 3. 解析 code（列表里只有名字；⛔ 没 code 的票猫抓查不到，必须逐只留痕） ────
+  let codeMap = {};
+  try {
+    codeMap = (await readStockCodeMap(env)) || {};
+  } catch (e) {
+    logs.push('[r30backfill] ⚠️ 读 stockcodemap 失败（继续用二级兜底）: ' + ((e && e.message) || e));
+  }
+  let missing = names.filter(n => !codeMap[n]);
+  if (missing.length > 0) {
+    try {
+      const second = (await readCodesFromMetricsByNames(env, missing)) || {};
+      let added = 0;
+      Object.keys(second).forEach(function (n) {
+        if (!codeMap[n] && second[n]) { codeMap[n] = second[n]; added++; }
+      });
+      if (added > 0) logs.push('[r30backfill] market_metrics.code 二级补码 ' + added + ' 只');
+    } catch (e) {
+      logs.push('[r30backfill] ⚠️ 二级补码失败: ' + ((e && e.message) || e));
+    }
+  }
+  const targets = [];
+  const noCode = [];
+  names.forEach(function (n) {
+    const code = String(codeMap[n] || '').trim();
+    if (/^\d{6}$/.test(code)) targets.push({ name: n, code: code });
+    else noCode.push(n);
+  });
+  if (noCode.length > 0) {
+    logs.push('⚠️ [r30backfill] ' + noCode.length + ' 只查不到 code ⇒ 无法向猫抓取数（§10 留痕）: ' + noCode.join('、'));
+  }
+  if (targets.length === 0) {
+    logs.push('[r30backfill] ⚠️ 无可用代码，跳过');
+    return { ok: false, date: lastDay, dates: window, targets: 0, created: 0, filled: 0, skipped: noCode.length, logs };
+  }
+  const codes = targets.map(t => t.code);
+
+  // ── 4. 读库内现状：哪些 (date, stock) 没行、哪些行缺字段 ─────────────────────
+  const existing = {};         // date -> Map(name -> row)
+  for (let i = 0; i < window.length; i++) {
+    const d = window[i];
+    let rows;
+    try {
+      rows = await readMarketMetricsRowsForDate(env, d, names);
+    } catch (e) {
+      logs.push('[r30backfill] ❌ 读取 ' + d + ' 失败（中断，避免误覆盖）: ' + ((e && e.message) || e));
+      return { ok: false, date: lastDay, dates: window, targets: targets.length, created: 0, filled: 0, skipped: 0, logs };
+    }
+    const m = new Map();
+    (rows || []).forEach(r => { if (!m.has(r.name)) m.set(r.name, r); });
+    existing[d] = m;
+  }
+  let needNew = 0;
+  let needFill = 0;
+  window.forEach(function (d) {
+    targets.forEach(function (t) {
+      const cur = existing[d].get(t.name);
+      if (!cur) { needNew++; return; }
+      if (R30BF_FIELDS.some(f => r30bfIsEmpty(cur[f]))) needFill++;
+    });
+  });
+  logs.push('[r30backfill] 库内现状：缺行 ' + needNew + ' 个 (日,票)，缺字段 ' + needFill + ' 个 (日,票)');
+  if (needNew === 0 && needFill === 0) {
+    logs.push('[r30backfill] ✅ 窗口内目标票已完整，无需补写（零请求）');
+    return { ok: true, date: lastDay, dates: window, targets: targets.length, created: 0, filled: 0, skipped: 0, logs };
+  }
+
+  // ── 5. 一次猫抓区间请求（1 次额度）─────────────────────────────────────────
+  const startYMD = window[0].replace(/-/g, '');
+  const endYMD = lastDay.replace(/-/g, '');
+  let aucData;
+  try {
+    aucData = await numcatDailyAuc(env, codes.join(','), startYMD, endYMD, logs);
+  } catch (e) {
+    logs.push('[r30backfill] ❌ numcat daily_auc 失败: ' + ((e && e.message) || e));
+    return { ok: false, date: lastDay, dates: window, targets: targets.length, created: 0, filled: 0, skipped: 0, logs };
+  }
+  const fields = (aucData && aucData.fields) || [];
+  const items = (aucData && aucData.items) || [];
+  logs.push('[r30backfill] numcat 返回 ' + items.length + ' 行 · fields=' + JSON.stringify(fields));
+  // 复用早盘同一份解析（口径唯一，§6）：volume=auc_vol/100、yest_volume=auc_vol/占比、越界闸门…
+  //   ⚠️ 它返回的是 { metricsByDate, parsedCount, yestVolDerivedCount, outOfRange }（不是直接的 map），
+  //      2026-11-23 第一版就是把整个对象当日历用 ⇒ 一行都写不出去（已由单测①钉住）。
+  const parsed = parseNumcatToMetrics(items, fields, targets, logs, lastDay) || {};
+  const parsedByDate = parsed.metricsByDate || {};
+  logs.push('[r30backfill] 解析出 ' + Object.keys(parsedByDate).length + ' 个交易日、'
+    + (parsed.parsedCount || 0) + ' 条');
+  if (Array.isArray(parsed.outOfRange) && parsed.outOfRange.length > 0) {
+    logs.push('⚠️ [r30backfill] ' + parsed.outOfRange.length + ' 条竞价涨幅物理越界已按口径丢弃（§10 留空不猜）');
+  }
+
+  // ── 6. 历史日「涨幅」：同花顺批量日线（0 猫抓额度）────────────────────────────
+  //   ⚠️ 猫抓 daily_auc 给的是【竞价涨幅】，不是日涨幅。历史日的 change_pct 必须另找来源，
+  //      否则趋势图那条「涨幅」线还是空的。同花顺批量日线免费，且与 stock_daily_pct 同源同口径。
+  const closePctByCode = new Map();   // code -> Map<ymd, pct>
+  try {
+    const barsByCode = await fetchFuyaoBatchBars(
+      env, codes, r30bfShiftDays(window[0], -R30BF_BAR_LEAD_DAYS), lastDay);
+    barsByCode.forEach(function (bars, code) {
+      const m = barsToDailyPctMap(bars);
+      if (m && m.size > 0) closePctByCode.set(code, m);
+    });
+    logs.push('[r30backfill] 同花顺日线覆盖 ' + closePctByCode.size + '/' + codes.length + ' 只（用于 change_pct）');
+  } catch (e) {
+    // §10：失败只降级「涨幅」这一列，⛔ 不连坐竞价字段
+    logs.push('⚠️ [r30backfill] 同花顺日线失败（change_pct 本次留空，趋势图由前端补点）: ' + ((e && e.message) || e));
+  }
+
+  // ── 7. 组装写入行：只新建「库里确实没有的」+ 只填「库内为空的」─────────────────
+  const nowIso = new Date().toISOString();
+  const rows = [];
+  let created = 0;
+  let filled = 0;
+  window.forEach(function (d) {
+    const parsedRows = parsedByDate[d] || [];
+    const parsedByName = new Map();
+    parsedRows.forEach(r => { if (r && r.stock && !parsedByName.has(r.stock)) parsedByName.set(r.stock, r); });
+    targets.forEach(function (t) {
+      const cur = existing[d].get(t.name) || null;
+      const src = parsedByName.get(t.name) || null;
+      const barsPct = closePctByCode.get(t.code);
+      const closePct = barsPct ? barsPct.get(d) : null;
+
+      if (!cur) {
+        // 新建：⛔ 猫抓这一天没给值就不建行（不造空行冒充「有数据」，§10）
+        if (!src) return;
+        const row = {
+          date: d, stock: t.name, scope: 'auction', code: t.code,
+          source: 'numcat', updated_at: nowIso, updated_by: 'worker-r30backfill'
+        };
+        let any = false;
+        R30BF_FIELDS.forEach(function (f) {
+          if (f === 'change_pct') return;         // 单独处理（历史日用日线涨幅）
+          if (!r30bfIsEmpty(src[f])) { row[f] = src[f]; any = true; }
+        });
+        // 涨幅：非窗口末日 ⇒ 收盘口径（日线真值）；窗口末日 ⇒ 竞价副本（16:00 close 会覆盖）
+        const cp = (d !== lastDay && closePct !== null && closePct !== undefined)
+          ? r30bfPctStr(closePct)
+          : (src.change_pct || '');
+        if (cp !== '') { row.change_pct = cp; any = true; }
+        if (!any) return;                          // 一个值都没有 ⇒ 不建行
+        rows.push(row);
+        created++;
+        return;
+      }
+
+      // 已有行：只补空位（§11 ⛔ 不覆盖已有非空值）
+      const patch = { date: d, stock: t.name, scope: 'auction' };
+      if (cur.code) patch.code = cur.code; else patch.code = t.code;
+      let any = false;
+      R30BF_FIELDS.forEach(function (f) {
+        if (f === 'change_pct') return;
+        if (!r30bfIsEmpty(cur[f])) return;
+        const v = src ? src[f] : '';
+        if (!r30bfIsEmpty(v)) { patch[f] = v; any = true; }
+      });
+      if (r30bfIsEmpty(cur.change_pct)) {
+        // 历史日优先用日线真值；窗口末日用 cat 的竞价副本（当天的「涨幅」在竞价期就是竞价涨幅）
+        const cp = (d !== lastDay && closePct !== null && closePct !== undefined)
+          ? r30bfPctStr(closePct)
+          : (src ? src.change_pct : '');
+        if (!r30bfIsEmpty(cp)) { patch.change_pct = cp; any = true; }
+      }
+      if (!any) return;
+      patch.source = 'numcat';
+      patch.updated_at = nowIso;
+      patch.updated_by = 'worker-r30backfill';
+      rows.push(patch);
+      filled++;
+    });
+  });
+
+  if (rows.length === 0) {
+    logs.push('⚠️ [r30backfill] 猫抓与日线都没有可写入的值（当天的行可能尚未结算，次日窗口重刷会自动补上）');
+    return { ok: true, date: lastDay, dates: window, targets: targets.length, created: 0, filled: 0, skipped: noCode.length, logs };
+  }
+
+  // ── 8. 写入（Data 层按「键集」分桶 ⇒ 同批键集一致，⛔ 不会抹掉未提及的列）──────
+  try {
+    await upsertMarketMetrics(env, rows);
+  } catch (e) {
+    logs.push('[r30backfill] ❌ 写入失败: ' + ((e && e.message) || e));
+    return { ok: false, date: lastDay, dates: window, targets: targets.length, created: 0, filled: 0, skipped: noCode.length, logs };
+  }
+  logs.push('✅ [r30backfill] 补写 ' + rows.length + ' 行（新建 ' + created + ' / 补字段 ' + filled + '），窗口 '
+    + window[0] + '~' + lastDay);
+  return {
+    ok: true, date: lastDay, dates: window, targets: targets.length,
+    created: created, filled: filled, skipped: noCode.length, logs: logs
+  };
 }
 
 
@@ -7090,18 +8421,6 @@ const RANGE10_CNT_FIRST = 1;
 const RANGE10_CNT_SECOND = 2;
 
 /**
- * 涨幅 → 「+49.00%」文案（仅用于【说明文字】，⛔ 不参与任何判定）。
- * §21：文案在 Logic 层拼好，模板零计算；缺值 ⇒ '—'（⛔ 不补 0，§10）。
- * @param {number|null} n
- * @returns {string}
- */
-function _fmtPct(n) {
-  const v = (n === null || n === undefined || n === '') ? null : Number(n);
-  if (v === null || !isFinite(v)) return '—';
-  return (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
-}
-
-/**
  * 【纯函数】把注入的十日涨幅池排成「屏幕顺序 + 主板名次」。
  *
  * @param {Array<{name:string, code?:string, topic?:string, pct:number|string|null}>} pool
@@ -7192,8 +8511,11 @@ function buildRange10Ranked(pool) {
  *      ⚠️ 「没有首次在列」按【剔除后仍可用】解释：一档里全是同题材的，
  *         等于「没有可用的首次在列」⇒ 才看二档；两档都空 ⇒ 返回 pick=null（= 空仓）。
  *   ④ 选中即停，⛔ 绝不多选（用户：「有首次在列的只选一只」）。
- *   ⑤ ★★ [R10-YIZI 2026-10-24] 若选中的那只【今日竞价一字涨停】⇒ 买不进 ⇒
- *      pick=null、blockedBy='yizi'、blocked=那只票，⛔ **不换下一名替补**（本日候补空仓）。
+ *   ⑤ ★★ [R10-YIZI-REPEAL 2026-11-16 用户口径] 选中的那只【今日竞价一字涨停】⇒ **照选**，
+ *      由 `auction-yizi-tag.js#annotateAuctionYizi` 统一挂「竞价一字涨停 · 等下杀买」标签。
+ *      ⛔ 已废除的旧口径（2026-10-24 ~ 11-16）：一字 ⇒ pick=null、blockedBy='yizi'、不换下一名 ⇒ 候补空仓。
+ *      废除依据（用户原话）：「一字涨停可以入选……也没叫你去掉啊」「盘中它有时候会开板」。
+ *      ⚠️ 仍然【不换下一名替补】：选中的是它，就是它 —— 一字只是买点时机问题，不是换票理由。
  *
  * @param {Array} pool 见 buildRange10Ranked
  * @param {{counts?:Map<string,{cnt:number}>|null, coveredDays?:number, topN?:number,
@@ -7207,7 +8529,7 @@ function buildRange10Ranked(pool) {
  *           请在规则层的说明文案里讲（_buildRange10BackupBlock 的 overlap）。
  * @returns {{ready:boolean, reason:string, pick:object|null, tier:'first'|'second'|'',
  *            trail:Array<object>, topN:number, coveredDays:number, windowDays:number,
- *            blockedBy:string, blocked:object|null, yiziUnknown:boolean}}
+ *            blockedBy:string, blocked:object|null, yiziUnknown:boolean, yiziPicked:boolean}}
  */
 function pickRange10Backup(pool, opts) {
   const o = opts || {};
@@ -7231,14 +8553,18 @@ function pickRange10Backup(pool, opts) {
     topN: topN,
     coveredDays: coveredDays,
     windowDays: RANGE10_BACKUP_WINDOW_DAYS,
-    // ★★ [R10-YIZI 2026-10-24 用户口径] 买不进（竞价一字涨停）的三件事实：
-    //   · blockedBy = 'yizi'  ⇒ 「不是选不出，是选出来的那只买不进」—— 规则层据此换文案；
-    //   · blocked   = 被否掉的那只（name/topic/pct/rank/cnt/label/aucPct），用于说明区点名；
+    // ★★ [R10-YIZI 2026-10-24 用户口径 · 2026-11-16 部分废除] 买不进（竞价一字涨停）的三件事实：
+    //   · blockedBy = 'yizi'  ⇒ **11-16 起不再产生**（一字票照选 + 挂标签，见函数体尾段）；
+    //                            字段保留只为不打断既有下游 shape，恒为空串。
+    //   · blocked   = 被否掉的那只 —— 现仅剩 'abnormal'（第三十四条全场监管异动）会写；
     //   · yiziUnknown = 选中的票今日竞价数据缺失（补位行）⇒ 无法确认是否一字，需用户自核。
     //   ⚠️ 三个都是【附加信息】，缺省值 = 没有发生（§11：老调用方 / 老单测零行为变化）。
     blockedBy: '',
     blocked: null,
-    yiziUnknown: false
+    yiziUnknown: false,
+    // ★ [R10-YIZI-REPEAL 2026-11-16] 候补选中的是一只竞价一字涨停票（照选 + 挂标签）。
+    //   纯留痕标记，⛔ 不参与任何判定；规则层据此在说明区补一句「已挂等下杀买标签」。
+    yiziPicked: false
   };
 
   const ranked = buildRange10Ranked(pool);
@@ -7295,36 +8621,21 @@ function pickRange10Backup(pool, opts) {
       '（有首次在列只选一只；没有首次在列才看二次在列）⇒ 今天空仓';
     return out;
   }
-  // ★★ [R10-YIZI 2026-10-24 用户口径] 「买不进去的，也不用替补，也不用选进去了」：
-  //   最强的那只若是【竞价一字涨停】⇒ 一字板竞价买不进（开盘也基本买不到）⇒
-  //   ⛔ 不选入，⛔ 也不顺延到下一名（下一名更弱，替换没有意义），本日候补直接空仓。
-  //   ⚠️ 只对【会被选中的那一只】生效：一字票若排在更后面（前面已有可用票），它不影响结论。
-  if (pick.isYizi === true) {
-    // 让「前十逐只去留」那段文字也能看见它被否掉的真实原因（可追溯，§10）
-    pick.reason = '今日【竞价涨停（一字板）】⇒ 竞价买不进 ⇒ 不选入，也不替补';
-    out.blockedBy = 'yizi';
-    out.blocked = {
-      name: pick.name, code: pick.code, topic: pick.topic,
-      pct: pick.pct, rank: pick.rank, rowNo: pick.rowNo,
-      cnt: pick.cnt, label: pick.label, aucPct: pick.aucPct
-    };
-    out.tier = '';          // ⛔ 一档都没成（别让下游误读成「首次在列档选出来的」）
-    out.pick = null;
-    out.reason = '十日涨幅前 ' + topN + ' 名里最强的那只【' + pick.name + '】' +
-      '（' + (pick.topic || '—') + '，十日涨幅 ' + _fmtPct(pick.pct) +
-      '，第 ' + pick.rank + ' 名，' + (pick.label || '次数未知') + '）' +
-      '今日【竞价涨停（一字板）】' +
-      (pick.aucPct === null ? '' : ('（竞价涨幅 ' + _fmtPct(pick.aucPct) + '）')) +
-      ' ⇒ 一字板竞价买不进、开盘也基本买不到；' +
-      '按用户口径【不选入、也不替补】⇒ 今天这只候补【空仓】（⛔ 没有换成下一名顶上来）';
-    return out;
-  }
+  // ★★ [R10-YIZI-REPEAL 2026-11-16 用户口径】「一字涨停可以入选……也没叫你去掉啊」
+  //   ⇒ 原 2026-10-24 那段「竞价一字 ⇒ 不选入、也不替补（本日候补空仓）」【整段废除】。
+  //   现在：一字票**照选**，标签由 `annotateAuctionYizi` 统一挂（唯一来源 = auction-yizi-tag.js）。
+  //   ⛔ 仍然不换下一名：一字只是「什么时候买」的问题（等下杀/开板），不是「换成更弱那只」的理由。
+  //   ⛔ 别把这段改回 return null —— 11-16 盘中实测：北纬科技一字，按旧口径候补直接空仓，
+  //      收盘只剩日出东方一只，用户当场指出规则被改错（`.workbuddy/memory/2026-11-16.md` 第 9 轮）。
   out.pick = pick;
   out.tier = tier1 ? 'first' : 'second';
   // §10：补位行（「20天」票）不在今日竞价名单里 ⇒ 拿不到竞价涨幅 ⇒ 判不出是否一字。
   //   仍然选它（⛔ 不因为「不知道」就否掉一个合格候选），但要把这个缺口如实说出去，
   //   让用户自己核一眼 —— 这比「默默当成能买」安全。
   if (pick.isYizi === null) out.yiziUnknown = true;
+  // ★ 可追溯留痕：一字票照选时记一笔，规则层据此在说明区写明「已挂等下杀买标签」。
+  //   ⛔ 只读标记，不参与判定（§21）。
+  if (pick.isYizi === true) out.yiziPicked = true;
   return out;
 }
 
@@ -7644,6 +8955,41 @@ const WEAK_HUDDLE_TITLE =
   '且正好属于那个退潮题材 ⇒ 行情差时资金会抱团最强的市场龙头，它可以作为当天买入的票。' +
   '⚠️ 它同时仍在下面的灰化块里出现一次（那块照旧灰化、不恢复）—— 题材结论与股票结论是两件事。';
 
+// ══【第三十五条 · 30日涨幅抱团（补涨让路版）】══════════════════════════════════════════
+// 用户口径（2026-11-18，逐字）：
+//   「现在新增了30日涨幅，需要在约束下，需要再新添新规……如果有同题材的股票在30日涨幅中排前三，
+//     那么就优先选，记住是竞价口径，上面的那个补涨题材选票要让路（也就是三十一条让路，不选，
+//     不用这条），因为同题材的龙在30日涨幅前三，说明强势，还没死透，在行情差时，会抱团，
+//     所以还没轮到补涨，应该继续抱团选最强的，假如30日涨幅当天排前三没有同题材的股票排名前三，
+//     再考虑原有的补涨票也就是那条三十一条。」
+//
+// 一句话：空仓日先看【30日涨幅前三】有没有同大类的龙 —— 有就抱团它（还没轮到补涨），没有才轮到补涨。
+//
+// ⚠️ 与第三十条【弱势切抱团】只差一把尺子：
+//   · 第三十条  ：**20日**涨幅前三，同题材的【全部】选（可能 ≥1 只）；
+//   · 第三十五条：**30日**涨幅前三，同题材的**只选最靠前的 1 只**（用户拍板「只选最强的 1 只」）。
+//   两条同一天都成立时**以本条为准**（用户拍板「三十/三十一/三十二全部让路」，见 catalog C10）。
+const TOP30_HUDDLE_RULE_NO = '三十五';
+/** 动作标签（买点行上唯一那枚「买」字辈） */
+const TOP30_HUDDLE_TAG = '30日涨幅抱团';
+/** 独立买点块的合成题材头（渲染在灰化容器之外的那一段的标题） */
+const TOP30_HUDDLE_BLOCK_TOPIC = '30日涨幅抱团 · 买点';
+/** 只在 30日涨幅主板前几名里找（用户口径「排前三」） */
+const TOP30_HUDDLE_TOP_N = 3;
+/** 命中时选几只（用户 2026-11-18 拍板：「只选最强的 1 只」，⛔ 不是全部命中都选） */
+const TOP30_HUDDLE_PICK_COUNT = 1;
+/**
+ * 配色档：沿用第三十条/第三十二条那档紫罗兰 `weakhuddle`。
+ * ⛔ 不为新规则另造颜色 —— 同属「空仓日抱团买」，同一视觉语义；两枚标签靠文字区分。
+ */
+const TOP30_HUDDLE_TONE = 'weakhuddle';
+/** 悬停说明（文案唯一出处；组件只渲染 Logic 给的值，§21） */
+const TOP30_HUDDLE_TITLE =
+  '第三十五条【30日涨幅抱团】：空仓日（平均竞价量比 < 25、整段灰化）里，【30日涨幅主板前三】（9:26 竞价口径）' +
+  '有票与本灰色题材块同大类 ⇒ 说明这个题材的龙还强势、没死透，行情差时会继续抱团最强的那个，' +
+  '**还没轮到补涨** ⇒ 选这只最强的抱团，第三十条/第三十一条/第三十二条今天一条都不用。'
+  + '⚠️ 它同时仍在下面的灰化块里出现一次（那块照旧灰化、不恢复）—— 题材结论与股票结论是两件事。';
+
 /**
  * ══ 【补涨题材 · 买点】标签组（第三十一条 · 2026-10-27 用户口径）══════════════════════════
  *
@@ -7758,6 +9104,20 @@ const TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG = '龙一跌停不买';
  *   ⚠️ 与 CASH_NO_BUY_TONE / DIVERGE_NO_BUY_TONE 同一条理由（见那两处注释）。
  */
 const TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE = EBB_NO_BUY_TONE;
+
+/**
+ * ══ 【第二十九条 · 第二题材量比不达标 ⇒ 灰块】的覆盖式标签 ══
+ *    ★★ [TOPIC-INNER-SELECT 2026-11-17 用户口径]
+ *
+ * 用户原话：「如果他平均量比不符合，10日涨幅前十又没有票，就是灰色块。」
+ * ⇒ 这个题材【照常列出】（⛔ 不再整块删除），整块灰化、票上一律挂这枚标签 = 今天不买。
+ *
+ * ⛔ 复用【退潮不买】/【分歧日不买】/【龙一跌停不买】都不行 —— 三枚讲的是三种不同的成因，
+ *   用户恰恰是靠成因来核对判定对不对的（本次事故就是「成因对了、选票范围错了」）。
+ */
+const SECOND_TOPIC_VOLWEAK_NO_BUY_TAG = '题材量比不达标 · 不开新仓';
+/** 配色档：与前几枚「不开新仓」标签同一档（理由见 TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE 的长注释） */
+const SECOND_TOPIC_VOLWEAK_NO_BUY_TONE = EBB_NO_BUY_TONE;
 
 /**
  * ══ 【总龙首次分歧 · 买点】标签组（第十九轮补丁⑧ · 2026-10-20 用户口径）══════════════════
@@ -8005,6 +9365,72 @@ const ABNORMAL_KIND_NEXT_DAY = 'nextDay';
 const ABNORMAL_KIND_LEADER_NOW = 'leaderNow';
 /** 触发形态：某只入选票十日涨幅 > TVRB_RANGE10_CAP（全场空仓） */
 const ABNORMAL_KIND_STOCK = 'stock';
+
+/**
+ * ══【第三十四条 · 延伸分支 ABN-TB：异动后的【第三天】只禁【同题材】】══════════════════════
+ *
+ * ★★ 用户口径（2026-11-17 原话，逐字）★★
+ *   「1.记住总龙一第一次监管异动，之后两天，次日本来现在的规则不能买，不变，在第三天都不能买
+ *     它题材的股票，比如东方海洋，细分题材有(水产品,农业,东方,羊字辈)，第三天，不能选入其它
+ *     同题材的股票进入买点侧，临时题材包括在内。
+ *     比如日出东方不该选入11月16日的买点侧，日出东方(家电,热泵,东方)，含有题材窜东方就不行，
+ *     如果它题材窜含有水产品，或者农业，或者羊字辈也不行（11月12日总龙一含有的题材窜细分题材），
+ *     不能选入当天买点侧。
+ *     也就是重点监控第三天，第四天按照正常流程走。」
+ *
+ * ── 为什么需要它（11-12 / 11-13 / 11-16 的真实落地数据）──────────────────────────────
+ *   11-12（周四）= 异动日：东方海洋 十日涨幅（9:26 竞价口径）**+100.78%** ＞ 97%
+ *     （库内 `stock_range_pct` + `market_metrics` 反解，与用户记录一致）。
+ *   11-13（周五）= **次日**：第三十四条原口径已判【全场空仓】，正确。
+ *   11-16（周一）= **第三天**：题材量比选股仍选出【日出东方】—— 它是临时题材【东方】的票，
+ *     而【东方】正是 11-12 那只总龙一的细分题材之一 ⇒ **这就是本条要堵的缺口**。
+ *     ⚠️ 缺口成因：原口径只管「异动当日 / 次日」两天，第三天既不是空仓日、也不再有任何标记。
+ *   11-17（周二）= **第四天** ⇒ 按用户口径【恢复正常流程】，本条不生效。
+ *
+ * ── 与「次日空仓」的分工（⛔ 别混，两者后果完全不同）──────────────────────────────────
+ *   · 次日（dayOffset = 1）：第三十四条原口径 ⇒ **全场空仓**（一张票都不买）；
+ *   · 第三天（dayOffset = 2）：**只禁同题材**（其它题材该买照买）—— 用户「不能选入其它同题材的
+ *     股票进入买点侧」，⛔ 没说整个市场空仓；
+ *   · 第四天（dayOffset ≥ 3）：本条不生效（用户「第四天按照正常流程走」）。
+ *   ⇒ 所以本条【不接管 cashAlert】（cashAlert.show 会驱动整段灰化，那是空仓语义），
+ *     只按题材 / 按票灰化 + 改标签，并挂一块独立的提示板。
+ *
+ * ── 「同题材」怎么认（⛔ 三个来源缺一不可，见 abnormal-topic-ban.js）────────────────────
+ *   ① 异动日当天那只总龙一的【细分题材串】= `auction_watchlist.note` 括号里那一段
+ *      （11-12 真实值：`水产品,农业,东方,羊字辈`）—— 这是用户点名的那份，**必须**用它：
+ *      `stock_topics` 题材库里 东方海洋 只有 `水产品,农业`，缺 `东方 / 羊字辈`；
+ *   ② 题材库（`stock_topics`）—— 用户口径「题材库 = 权威」[TOPIC-LIB-FIRST]；
+ *   ③ 候选票自己的题材串（题材库），逐票再判一次 —— 块级题材名只是【大类】，
+ *      票可能挂在别的块里（如日出东方同时属于「家电」「热泵」「东方」）。
+ *   ★ 「临时题材包括在内」（用户原话）：`东方` 正是临时核心词（规则〇·a），
+ *     它进了 ① 的细分串 ⇒ 天然被本条覆盖，⛔ 不需要为临时题材另写一条分支。
+ *
+ * ── §10 红线 ──────────────────────────────────────────────────────────────────────
+ *   · 异动日的细分题材串读不到（note 为空 / 日期链断了）⇒ **不判**，但提示板必须写明
+ *     「第三天同题材监控判不出（缺 11-12 的细分题材）」—— ⛔ 绝不当成「没有同题材」偷偷放行；
+ *   · 当天已经有【全场空仓】结论（次日 / 当日异动）⇒ 本条让位（空仓已经更严）。
+ */
+/** 本条生效的交易日偏移：异动日 + 2 个交易日 = 用户说的【第三天】 */
+const ABNORMAL_TOPIC_BAN_DAY_OFFSET = 2;
+/** 被禁票的动作标签（⛔ 不复用【异动不买】：那是全场空仓，成因与后果都不同） */
+const ABNORMAL_TOPIC_BAN_TAG = '异动同题材不买';
+/** 配色档：与【退潮不买 / 异动不买】同一档（深墨亮字，灰化容器下唯一还读得出来的档） */
+const ABNORMAL_TOPIC_BAN_TONE = EBB_NO_BUY_TONE;
+/** 未触发时的稳定返回值（同一引用 ⇒ 不白白触发下游重算 / 重渲染，§19） */
+const TVRB_ABNORMAL_TOPIC_BAN_NONE = Object.freeze({
+  active: false,
+  unknown: false,
+  dayOffset: null,
+  triggerDate: '',
+  todayDate: '',
+  leaderName: '',
+  leaderPctText: '—',
+  segments: Object.freeze([]),
+  noteTopics: Object.freeze([]),
+  libTopics: Object.freeze([]),
+  headline: '',
+  detail: ''
+});
 /** 未触发时的稳定返回值（同一引用 ⇒ 不白白触发下游重算 / 重渲染，§19） */
 const TVRB_ABNORMAL_NONE = Object.freeze({
   show: false,
@@ -8022,6 +9448,37 @@ const TVRB_ABNORMAL_NONE = Object.freeze({
   headline: '',
   detail: ''
 });
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [BUYABLE-COUNT 2026-11-19 用户口径] 「今天不能下单」的行尾标签总表（§6 唯一清单）
+//
+// 用户原话：「可以改下计数那里」。
+//
+// 病根（11-17 实测，屏幕上真实可见）：
+//   第三十五条已经选出九阳股份（灰色题材块之外、唯一能买的那一只），
+//   但灰块里那两只【广百股份 / 日出东方】挂着「分歧日不买」**照样被数进「选股 N 只」**
+//   ⇒ 顶部写「选股 3 只」，实际只有 1 只能下单。
+//   `_countUnique` 当时只跳过了 `abnormalTopicBlocked`（第三十四条延伸那一枚），
+//   其余六枚「不买 / 不开新仓」标签一概没管 —— 这正是「数行数」与「数能下单的只数」混在一起。
+//
+// 口径（与 user 早先原话一致：「数的是【今天能下单的】」）：
+//   行尾一旦是下面任意一枚标签，这只票今天【没有买点】⇒ ⛔ 不计入「选股 N 只」。
+//   票本身仍【照常列出】（用户「不用去掉」），只是不给买点、不计数。
+//
+// ⛔ 以后新增任何「不买 / 不开新仓 / 禁入」类标签，**必须加进这个数组**，
+//    否则计数会再次虚高。唯一消费点：`tvrb-utils.js#_isBuyablePick`（⛔ 别在别处再抄一份 if）。
+// ⚠️ 与「一字买不进」区分：`AUCTION_YIZI_WAIT_TAG`（竞价一字涨停 · 等下杀买）**是可买的**，
+//    ⛔ 不进这张表；同理【退潮替补】/【弱势切抱团】/【补涨题材】/【龙一跌停切抱团】
+//    /【30日涨幅抱团】/【新龙】/【十日候补】都是买点标签，都不在表内。
+const NO_BUY_ACTION_TAGS = [
+    EBB_NO_BUY_TAG,                        // 退潮不买
+    CASH_NO_BUY_TAG,                       // 分歧日不买
+    TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG,     // 龙一跌停不买
+    SECOND_TOPIC_VOLWEAK_NO_BUY_TAG,       // 题材量比不达标 · 不开新仓
+    DIVERGE_NO_BUY_TAG,                    // 总龙分歧不买
+    ABNORMAL_NO_BUY_TAG,                   // 异动不买
+    ABNORMAL_TOPIC_BAN_TAG                 // 异动同题材不买
+];
+
 
 // ────── ../src/logic/util/num-text.js ──────
 // num-text.js — 数据库「文本型数字」的统一解析（§6 单一实现）
@@ -9624,16 +11081,56 @@ async function runBiddingCloseWrite(env, opts) {
 //   ⛔ 不造数：s2/s6 必须是有效正数；绝不用 market_metrics / 竞价涨幅 / 前一交易日值冒充。
 //   ⛔ 交易日映射不靠猜：窗口内相邻两个交易日天然互为 next（0 请求，自动含节假日）；
 //      只有窗口最后一天才用 isTradingDay 逐日推下一个交易日。
+//
+// ★★ [JIWANG-MON-2026-11-23] 「每到周一三个字段全空」事故 —— 两个独立缺陷
+//
+//   【缺陷一 · 时点】16:00 那次 jiwang 排在当日所有猫抓调用【最后】。
+//     bidding_fetch_log 逐日取证（time_point=jiwang，全部 ok=false，连 11-16~11-20 五天无一例外）：
+//       ❌ 猫抓 emoindic_daily 失败（本次一行不写）: 今日调用额度已用完，请于北京时间次日零点后重试
+//     ⇒ 猫抓 10 次/天，9:25 morning、yizi-0925、yizi-trend、close 的 daily 早就用光，
+//       16:00 再要 emoindic 必然拿不到 ⇒ 「明天的行」写不进去 ⇒ 周一打开看到的「上周五」
+//       永远是空。真正的兜底（supabase-heal 的 08:50 那轮）又被 GitHub Actions 的
+//       schedule 延迟 6~8 小时（实测 00:50Z 的 cron 实际跑在 07:22~08:35Z = 北京 15:22~16:35），
+//       落到的仍是「额度已用尽」的时段 ⇒ 兜底形同不存在。
+//     ✅ 修法：① 接上 `postNumcat` 的主 key → 小号 fallback（本模块原来只读一把 key，
+//        主账号用尽就直接放弃，而其它模块早就自动退小号了）；
+//        ② 9:25 morning 轮也跑一次（额度刚在北京 0 点重置，是全天最富裕的时点，
+//        见 index.js 的 JIWANG-MORNING-SLOT）。9:25 跑时窗口最后一天=昨天 ⇒ 写的正是
+//        「今天这一行的昨收盘结果」，也就是周一早上要看的那一格。
+//
+//   【缺陷二 · 逻辑】盘中跑会把「今天的盘中快照」当成收盘值写进【明天】那一行。
+//     实证（2026-11-23 11:29 手动触发）：窗口 11-10~11-23，猫抓对 11-23 已经返回
+//     s2/s6=1717/3763（盘中实时家数，不是收盘值），alignWindowTargets 把它当
+//     「11-23 的收盘结果」写进了 `jiwang_data[2026-11-24].shouguJieguo=3763:1717`。
+//     而本模块「只填空、不覆盖」⇒ 这个错值会被永久固化，明天 16:00 也改不回来。
+//     ✅ 修法：`pickWindowRows` —— 同一交易日在 15:05 之前一律视为【未收盘】，
+//        整行剔除，既不当值写出去，也不参与「下一交易日」推演。
+//        ⇒ 盘中只可能写「今天」那一行（值来自昨天，已收盘，安全）；
+//           收盘后才会写「明天」那一行（值来自今天，已收盘）。
 
 
 
+
+// ★ [JIWANG-MON-2026-11-23] 走统一客户端：主 key 额度用尽自动退小号 + 瞬态失败同 key 重试。
+//   ⛔ 原来自己拼 POST 只读一把 key，主账号一用尽就整轮放弃（缺陷一见文件头）。
 
 const NUMCAT_EMOINDIC_URL = 'https://numcat.net/api/reference-proxy/market/emoindic-daily';
 const NUMCAT_APINAME = 'emoindic_daily';
 const JW_RECENT_DAYS = 10;
-const JW_HTTP_TIMEOUT_MS = 15000;
 const JW_SB_TIMEOUT_MS = 12000;
 const ROW_COLUMN = 'shouguJieguo';
+/**
+ * 「当日已收盘」的判定线（北京）。
+ * 15:05 早于收盘集合竞价结束 + 数据商给值所需的最短延迟；宁可晚写 5 分钟，
+ * 也不能把一个 10:30 的盘中家数当成收盘结果永久固化。
+ */
+const JW_CLOSE_HHMM = '15:05';
+
+/** 北京 HH:MM（补零，可直接按字符串比较） */
+function beijingHHMM() {
+  const d = beijingNow();
+  return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0');
+}
 
 function jiwangFetch(url, opts, ms) {
   if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
@@ -9644,7 +11141,11 @@ function jiwangFetch(url, opts, ms) {
 
 /** 猫抓 10 日情绪窗口 → [{ date, up, down }]（升序）。字段缺失绝不折 0。 */
 function parseEmoindicRows(payload) {
-  const data = payload && payload.data;
+  // 兼容两种入参形态：
+  //   ① 上游原始 json `{ code, data: { fields, items } }`（旧调用方式 / 测试夹具）
+  //   ② `postNumcat` 已剥掉外壳直接返回 `{ fields, items }`
+  // ⛔ 不要只认 ①，否则接了统一客户端之后会静默解析出 0 行（契约型故障，零报错）。
+  const data = (payload && payload.data) ? payload.data : payload;
   const fields = data && data.fields;
   const items = data && data.items;
   if (!Array.isArray(fields) || !Array.isArray(items)) return [];
@@ -9663,6 +11164,28 @@ function parseEmoindicRows(payload) {
   });
   out.sort(function (a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
   return out;
+}
+
+/**
+ * ★ [JIWANG-MON-2026-11-23] 剔除「未收盘的今天」这一行。
+ *
+ * 为什么必须剔除：猫抓 emoindic_daily 对【当天】返回的是**盘中实时家数**，
+ *   而本模块语义是「某交易日的收盘跌涨家数」。盘中拿到它并当成收盘值写进下一交易日，
+ *   就会把 11:29 的快照固化成「昨收盘结果」（实测事故，见文件头缺陷二）。
+ *
+ * 判据只有一条：`date === today && hhmm < 15:05` ⇒ 未收盘。
+ *   收盘后（>= 15:05）保留，此时写的是「明天」那一行，值是今天收盘的真值。
+ *   窗口里没有今天（比如早上猫抓还没给今天）⇒ 原样返回，最后一天是昨天，依然安全。
+ *
+ * @param {Array<{date:string,up:number,down:number}>} rows 升序窗口
+ * @param {string} today 北京今天 YYYY-MM-DD
+ * @param {string} hhmm 北京 HH:MM
+ * @returns {Array} 可安全当作「收盘值来源」的行
+ */
+function pickWindowRows(rows, today, hhmm) {
+  if (!Array.isArray(rows)) return [];
+  if (!today || !hhmm || hhmm >= JW_CLOSE_HHMM) return rows;
+  return rows.filter(function (r) { return r && r.date !== today; });
 }
 
 /**
@@ -9700,18 +11223,18 @@ function buildJiwangShouguWriteRows(targets, existingRows, nowIso) {
   return rows;
 }
 
-async function fetchEmoindicWindow(env) {
-  const key = env.NUMCAT_API_KEY || env.NUMCAT_API_KEY_YIZI || '';
-  if (!key) throw new Error('缺少 NUMCAT_API_KEY / NUMCAT_API_KEY_YIZI，无法取收盘跌涨家数');
-  const resp = await jiwangFetch(NUMCAT_EMOINDIC_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ apiname: NUMCAT_APINAME, apikey: key, params: { recentdays: JW_RECENT_DAYS } })
-  }, JW_HTTP_TIMEOUT_MS);
-  if (!resp.ok) throw new Error('猫抓 emoindic_daily HTTP ' + resp.status);
-  const json = await resp.json();
-  if (json && json.code !== 200) throw new Error('猫抓 emoindic_daily 错误: ' + (json.message || 'code=' + json.code));
-  return json;
+async function fetchEmoindicWindow(env, logs) {
+  // ★ [JIWANG-MON-2026-11-23] 改走 postNumcat：主 key 额度用尽 → 自动退小号；
+  //   瞬态超时 → 同 key 重试一次。原来这里只读一把 key，主账号一耗尽就整轮放弃，
+  //   这正是 11-16~11-20 连续五天 ok=false 的直接原因。
+  const r = await postNumcat(env, {
+    apiname: NUMCAT_APINAME,
+    url: NUMCAT_EMOINDIC_URL,
+    params: { recentdays: JW_RECENT_DAYS },
+    logs: logs
+  });
+  // postNumcat 返回的是已剥壳的 data（{fields,items}），parseEmoindicRows 两种形态都认。
+  return { code: 200, data: r.data, keyName: r.keyName };
 }
 
 async function readExistingJiwang(env, dates) {
@@ -9736,28 +11259,68 @@ async function nextTradingDayAfter(env, dateStr, maxDays) {
   return '';
 }
 
-async function runJiwangCloseWrite(env) {
+/**
+ * @param {object} env worker env
+ * @param {object} [opts]
+ * @param {boolean} [opts.skipIfTodayFilled] true ⇒ 先花 1 次【Supabase 读】（0 猫抓额度）看
+ *   今天这一行是不是已经有 shouguJieguo，有就直接返回、不碰猫抓。
+ *   仅供 9:27 兜底轮使用：它唯一目标就是「今天这行」，正常日早被前一天 16:00 写好了
+ *   ⇒ 0 次猫抓请求，不白烧额度（§32）。⛔ 16:00 那轮绝不能开这个开关：
+ *   它要写的是【明天】那一行，今天有值不代表明天有值。
+ */
+async function runJiwangCloseWrite(env, opts) {
+  const o = opts || {};
   const logs = [];
   const today = beijingToday();
+  const hhmm = beijingHHMM();
+
+  // ★ [JIWANG-MON-SLOT 2026-11-23] 「今天已有值 ⇒ 0 次猫抓」的廉价前置判断。
+  //   读失败不能当成「已有值」跳过（§10）：读失败就照常往下走，让猫抓兜底去判断。
+  if (o.skipIfTodayFilled) {
+    try {
+      const pre = await readExistingJiwang(env, [today]);
+      const cur = pre.find(function (r) { return r && r.date === today; });
+      const v = cur && cur[ROW_COLUMN];
+      if (v !== null && v !== undefined && String(v).trim() !== '') {
+        logs.push('✅ 今天(' + today + ')已有昨收盘结果 ' + String(v) + ' ⇒ 0 次猫抓请求（§32）');
+        return { ok: true, written: 0, skipped: 'today-filled', logs, targets: [], today };
+      }
+      logs.push('今天(' + today + ')还没有昨收盘结果 ⇒ 需要向猫抓取一次（额度刚重置，9:27 最充裕）');
+    } catch (e) {
+      logs.push('⚠️ 前置查询失败（不当成已有值，继续兜底）: ' + (e && e.message));
+    }
+  }
 
   let payload;
   try {
-    payload = await fetchEmoindicWindow(env);
+    payload = await fetchEmoindicWindow(env, logs);
   } catch (e) {
     logs.push('❌ 猫抓 emoindic_daily 失败（本次一行不写）: ' + (e && e.message));
     return { ok: false, written: 0, logs, targets: [] };
   }
-  const rows = parseEmoindicRows(payload);
-  logs.push('猫抓窗口 ' + rows.length + ' 个交易日: ' + (rows.length ? rows[0].date + ' ~ ' + rows[rows.length - 1].date : '空'));
-  if (rows.length < 2) {
+  const rawRows = parseEmoindicRows(payload);
+  logs.push('猫抓窗口 ' + rawRows.length + ' 个交易日: ' + (rawRows.length ? rawRows[0].date + ' ~ ' + rawRows[rawRows.length - 1].date : '空'));
+  if (rawRows.length < 2) {
     logs.push('❌ 窗口不足 2 天或 s2/s6 全缺 ⇒ 一行不写（读取失败不造 0）');
+    return { ok: false, written: 0, logs, targets: [] };
+  }
+
+  // ★ [JIWANG-MON-2026-11-23] 盘中（< 15:05）的「今天」是实时快照，不是收盘值 ⇒ 整行剔除。
+  const rows = pickWindowRows(rawRows, today, hhmm);
+  if (rows.length !== rawRows.length) {
+    logs.push('⏱ 北京 ' + hhmm + ' 未到收盘判定线 ' + JW_CLOSE_HHMM +
+      ' ⇒ 剔除今天(' + today + ')的盘中家数，只写已收盘交易日（不把盘中值当收盘结果）');
+  }
+  if (rows.length < 1) {
+    logs.push('❌ 剔除盘中行后无可用交易日 ⇒ 一行不写');
     return { ok: false, written: 0, logs, targets: [] };
   }
 
   let lastNext = '';
   try {
     lastNext = await nextTradingDayAfter(env, rows[rows.length - 1].date);
-    logs.push('窗口最后一天 ' + rows[rows.length - 1].date + ' 的下一交易日 = ' + (lastNext || '未算出'));
+    logs.push('窗口最后一天 ' + rows[rows.length - 1].date + ' 的下一交易日 = ' + (lastNext || '未算出') +
+      '（北京 ' + hhmm + '，收盘线 ' + JW_CLOSE_HHMM + '）');
   } catch (e) {
     logs.push('⚠️ 下一交易日推算失败（最后一天不写，其余照常回补）: ' + (e && e.message));
   }
@@ -9796,6 +11359,87 @@ async function runJiwangCloseWrite(env) {
   } catch (e) {
     logs.push('❌ 写 jiwang_data 失败: ' + (e && e.message));
     return { ok: false, written: 0, logs, targets, rows: writeRows };
+  }
+}
+
+
+// ────── bidding-auto-fetch/logic/presence-recompute.js ──────
+// presence-recompute.js — 云端触发「十日涨幅 · 在列次数」预计算（第二十九条的必需输入）
+//
+// ★★ [PRESENCE-0926 2026-11-16 用户报障「每到收盘又变了」· 根因修复]
+//
+//   现场（真实时间戳，不是推测）：
+//     · 09:25  `bidding_fetch_log(morning)`：猫抓返回 350 行【含 auc_vol_ratio】，
+//              market_metrics 写 70 行 ⇒ 竞价量比在 09:25 就是齐的
+//     · 09:27  `snapshot` 定稿（created_at 01:27:30Z）
+//     · 但第二十九条要用的 `auction_presence`（某票在最近 10 个交易日名单里出现过几天）
+//       由 pg_cron `auction-presence-open` 在**北京 09:30** 才生成 —— 比定稿晚 3 分钟
+//     ⇒ `tvrb-plan.js#r10DataReady` 要求 `range10Presence.counts && coveredDays > 0`
+//     ⇒ 09:27 恒 false ⇒「排名第二的题材量比太小 ⇒ 整块作废」每天都被 §10 放行
+//     ⇒ 早上按「放行」定稿（多一个题材、多几只票），等表到货后页面一重算就翻脸
+//       （11-16：3 只 → 1 只；revison 1 → 2 就是 16:27 那次重算）
+//
+//   ⇒ 修法：**由本 Worker 在 09:26（ladder26 那一趟）直接调 RPC 算一遍**，
+//     把这张派生表的到货时间从 09:30 拉到 09:26，赶在 09:27 定稿之前。
+//     pg_cron 那条仍保留（兜底），两边都是同一个库内函数，幂等（先删后插）。
+//
+//   ⚠️ 为什么放在 ladder26 而不是 snapshot：
+//     ladder26 = 09:26，名单已最终落库（09:25:28），有整整一分钟余量；
+//     snapshot = 09:27 本身就是定稿时刻，P0 时间线更紧，不宜再塞一次计算。
+//
+//   ⚠️ 本函数只读 `auction_watchlist` + 交易日表，**纯库内计算**：
+//     零上游请求、零猫抓额度、不碰同花顺（不会 429）。
+//
+//   §10：失败【不阻断】本轮（这只是把派生表提前，正确性不依赖它）——
+//   但必须如实打进 `bidding_fetch_log.detail.logs`，⛔ 不许静默吞掉。
+
+
+const RPC_TIMEOUT_MS = 8000;
+
+/**
+ * 触发一次 `recompute_auction_presence(p_date)`。
+ *
+ * @param {object} env Worker 环境（要 SUPABASE_URL / SUPABASE_ANON_KEY|SERVICE_ROLE_KEY）
+ * @param {{date?:string, logs?:string[]}} opts date = YYYY-MM-DD（缺省由 RPC 侧自己算北京今天）
+ * @returns {Promise<{ok:boolean, rows:number, date:string, logs:string[]}>}
+ *          rows = 函数返回的写入行数（PostgREST 直接回整数）
+ */
+async function runPresenceRecompute(env, opts) {
+  const o = opts || {};
+  const logs = Array.isArray(o.logs) ? o.logs : [];
+  const date = String(o.date || '').trim();
+  const base = String((env && env.SUPABASE_URL) || CONFIG.SUPABASE_URL || '').replace(/\/+$/, '');
+  if (!base) {
+    logs.push('[presence] ⚠️ 缺 SUPABASE_URL ⇒ 跳过（在列次数仍由 pg_cron 09:26 兜底）');
+    return { ok: false, rows: 0, date: date, logs: logs };
+  }
+  const body = date ? { p_date: date } : { p_date: null };
+  const ctrl = (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function')
+    ? AbortSignal.timeout(RPC_TIMEOUT_MS) : undefined;
+  const t0 = Date.now();
+  try {
+    const r = await fetch(base + '/rest/v1/rpc/recompute_auction_presence', {
+      method: 'POST',
+      headers: sbHeaders(env || {}),
+      body: JSON.stringify(body),
+      signal: ctrl
+    });
+    const txt = await r.text();
+    if (!r.ok) {
+      logs.push('[presence] ⚠️ RPC ' + r.status + ' ' + txt.slice(0, 160) +
+        ' ⇒ 本轮跳过（不阻断；pg_cron 09:26 仍会兜底）');
+      return { ok: false, rows: 0, date: date, logs: logs };
+    }
+    const n = Number(String(txt || '').trim());
+    const rows = isFinite(n) ? n : 0;
+    logs.push('[presence] ✅ 在列次数（10/20 日窗口）云端重算完成：' + rows + ' 行，耗时 ' +
+      (Date.now() - t0) + 'ms' + (date ? '（date=' + date + '）' : '') +
+      '｜这是第二十九条的必需输入，必须在 09:27 定稿前就位');
+    return { ok: true, rows: rows, date: date, logs: logs };
+  } catch (e) {
+    logs.push('[presence] ⚠️ RPC 异常: ' + ((e && e.message) || String(e)) +
+      ' ⇒ 本轮跳过（不阻断；pg_cron 09:26 仍会兜底）');
+    return { ok: false, rows: 0, date: date, logs: logs };
   }
 }
 
@@ -9853,6 +11497,11 @@ async function runJiwangCloseWrite(env) {
 
 // [R20-CLOUD 2026-11-06] 同一趟 9:26 顺带把 20 日涨幅用逐日腿补缺（0 上游、0 额度）。
 
+// ★★ [R30-CLOUD 2026-11-20] Actions 的 30 日涨幅 cron 实测漂移/丢趟 ⇒ 当天名单那一块
+//   必须由本 Worker 在可靠时点补齐（9:26 填空 / 16:03 覆盖），否则「今天新冒出来的票」全空。
+
+// ★★ [R30-METRICS-HEAL 2026-11-23] 补位票「历史日整行都不存在」的云端补建（point=r30backfill）
+
 // [DAILY-LEGS-CLOUD 2026-11-06] 逐日腿云端补齐，彻底替代本机 08:00 定时任务。
 
 // ★★ [ABN-DEV 2026-11-14 用户口径] 官方「对应指数」逐日涨幅腿（market_metrics, scope='index'）
@@ -9868,6 +11517,7 @@ async function runJiwangCloseWrite(env) {
 // [JIWANG-SHOUGU-CLOUD 2026-11-08] 「昨收盘结果(跌:涨)」纯云端落库 + 10 日窗口历史回补。
 //   原来只靠另一个账号/查不到的 worker-b 在 16:00 写下一交易日，且日志带不存在的 worker 列被吞，
 //   11-05 16:00 那轮没跑 ⇒ jiwang_data 缺 11-06 整行 ⇒ 昨日跌涨/昨收盘结果/昨日情绪一起空。
+
 
 // [RUNLOG 2026-09-30] 把每轮的完整日志（含 ⏱ 埋点）落库到 bidding_fetch_log，
 //   否则 CF Worker 的埋点只进 Cloudflare Dashboard，事后无法复盘「9:26 为什么没数据」。
@@ -10300,6 +11950,25 @@ async function dispatch(point, env, logs, opts) {
       result.logs.push(msg);
       console.error('[auto-fetch] ' + msg);
     }
+    // ★★ [R30-CLOUD 2026-11-20] 30 日涨幅收盘口径：把 9:26 写的「截至昨收」覆盖成
+    //   当天真实收盘价（与 Actions 16:45 的 --overwrite 同一口径）。⛔ 只算当天名单，
+    //   近 40 日宽池仍由 Actions 负责；算不出的票不写，已有值不被清空（§10/§11）。
+    try {
+      const r30 = await runRange30Fill(env, {
+        date: (opts && opts.date) || '',
+        logs: result.logs,
+        endAtDate: true,
+        overwrite: true
+      });
+      result.range30Written = r30.written;
+      (r30.logs || []).forEach(l => result.logs.push('[r30-fill] ' + l));
+      console.log('[auto-fetch] closepost 30 日涨幅收盘覆盖: ok=' + r30.ok +
+        ' written=' + r30.written + ' 日志=' + JSON.stringify(r30.logs || []));
+    } catch (e) {
+      const msg = '[r30-fill] ❌ 异常（不影响本轮其它任务）: ' + ((e && e.message) || e);
+      result.logs.push(msg);
+      console.error('[auto-fetch] ' + msg);
+    }
     await persistRunResult(env, point, result);
     return result;
   }
@@ -10317,6 +11986,40 @@ async function dispatch(point, env, logs, opts) {
     //      还没落库」一只不写且没有重试；9:27 是开盘前最后一个云端时点，这里幂等重跑一次
     //      （只补当天缺行、已有值永不覆盖）即可把残缺榜补齐，不需要任何人打开网页。
     const date = (opts && opts.date) || '';
+    // ★★ [JIWANG-MON-SLOT 2026-11-23] 记忘「昨收盘结果」的第二道机会 —— 放在本分支最前面。
+    //
+    // 【为什么需要第二道】16:00 close 那次是主路径（写的是【明天】那行），但它排在当日所有
+    //   猫抓调用之后 ⇒ 额度经常已经用光。取证：bidding_fetch_log 里 time_point=jiwang
+    //   11-16~11-20 连续五天全 ok=false，原因逐字都是「今日调用额度已用完」。
+    //   ⇒ 周五那次失败 ⇒ 周一【一整行】不存在 ⇒ 用户看到的「昨日跌涨/昨收盘结果/昨日情绪」
+    //     三个一起是 '-'（用户 11-23 报障原话）。
+    //
+    // 【为什么是 9:27 这个时点】猫抓额度按北京时间 0 点重置，9:27 是开盘前最后一个云端时点
+    //   ⇒ 此时额度最充裕、必然拿得到。而盘中（< 15:05）跑时 `pickWindowRows` 会剔除
+    //   「今天的盘中家数」，窗口最后一天自然退到上一交易日 ⇒ 写的正是
+    //   `jiwang_data[今天].shouguJieguo = 上一交易日的收盘跌:涨`，也就是周一早上要看的那一格。
+    //   ⛔ 绝不会把 9:27 的盘中家数写成「明天」的值（那是缺陷二，已在 pickWindowRows 里堵死）。
+    //
+    // 【为什么放最前面】它在 9:27 这一轮的其它动作之前跑：① 不受后面 range/auc 补漏的
+    //   subrequest 消耗影响；② 失败只记日志，⛔ 不连坐（后面每一步本来各自 try/catch）。
+    // 【幂等】只填空，不覆盖任何已有非空值（§11）⇒ 与 16:00 那次重复跑没有任何副作用。
+    let jiwang27 = null;
+    try {
+      // skipIfTodayFilled：正常日「今天这行」早被前一天 16:00 写好了 ⇒ 0 次猫抓请求直接返回；
+      // 只有真缺（典型就是周一 —— 周五 16:00 额度用尽没写进来）才发那 1 次请求。
+      // ⛔ 手动回补历史日（&date=过去）时整段跳过：记忘永远只服务「今天」，与历史日无关（§32）。
+      if (!date || date === beijingToday()) {
+        jiwang27 = await runJiwangCloseWrite(env, { skipIfTodayFilled: true });
+      } else {
+        jiwang27 = { ok: true, written: 0, skipped: 'historical-date', logs: ['[jiwang] 手动回补历史日 ⇒ 记忘不参与'] };
+      }
+      console.log('[auto-fetch] [JIWANG-MON-SLOT] 9:27 记忘昨收盘结果兜底: ok=' + jiwang27.ok +
+        ' written=' + jiwang27.written + ' 日志=' + JSON.stringify(jiwang27.logs || []));
+    } catch (e) {
+      const msg = '[JIWANG-MON-SLOT] ❌ 记忘兜底异常（不影响本轮其它补写）: ' + ((e && e.message) || e);
+      console.error('[auto-fetch] ' + msg);
+      jiwang27 = { ok: false, written: 0, logs: [msg] };
+    }
     // 只对【今天】等上游；手动回补历史日时数据是固化的，等也没有意义（§32）。
     const upstream = (!date || date === beijingToday())
       ? await waitForMorningUpstream(env, date)
@@ -10427,9 +12130,17 @@ async function dispatch(point, env, logs, opts) {
       //   'board-not-ready' / 'write-failed' / 'no-trade-dates' 定位（⛔ 不要只看 ok）。
       leaderDiverge: ld27,
       leaderDivergeWritten: ld27.written || 0,
+      // ★★ [JIWANG-MON-SLOT 2026-11-23] 记忘昨收盘结果的结构化留痕。
+      //   验收口径：jiwangShouguWritten>0 = 本趟真的补上了「今天那一行」；
+      //   0 且 jiwang.ok=true = 本来就不缺（幂等跳过，正常日）。
+      //   ⛔ 别只看 ok：ok=false 时看 jiwang.logs 里是「额度用尽」还是「窗口不足」。
+      jiwang27: jiwang27,
+      jiwangShouguWritten: jiwang27 && jiwang27.written !== undefined ? jiwang27.written : null,
       upstreamReady: upstream.ready === true,
       upstreamRows: upstream.rows === null || upstream.rows === undefined ? null : upstream.rows,
-      logs: (upstream.logs || []).concat(snap.logs || [], range.logs || [], r20.logs || [], aucLogs, ldLogs)
+      logs: (upstream.logs || [])
+        .concat((jiwang27 && jiwang27.logs || []).map(function (l) { return '[jiwang] ' + l; }))
+        .concat(snap.logs || [], range.logs || [], r20.logs || [], aucLogs, ldLogs)
     };
     await persistRunResult(env, point, result);
     return result;
@@ -10490,6 +12201,42 @@ async function dispatch(point, env, logs, opts) {
       r20 = { ok: false, written: 0, logs: ['[r20-prefill] 异常: ' + ((e && e.message) || e)] };
       logs26.push(r20.logs[0]);
     }
+    // ★★ [R30-CLOUD 2026-11-20] 当天名单的 30 日涨幅补缺（开盘前 = 截至昨收口径）。
+    //   GitHub Actions 的 09:28 那趟实测漂移到凌晨、且经常整趟丢失 ⇒ 「今天首次出现的票」
+    //   因为候选池退化成近 40 日历史名单而整天空白（11-20 实测缺 5 只）。
+    //   这里只补「当天名单 ∪ 当天行情」这一小块（33 只 ≈ 4 次批量请求），
+    //   Actions 继续负责近 40 日宽池（30天/20天补位、龙头组那些注入行）。
+    //   ⛔ 只填空不覆盖（o.overwrite=false）；16:03 那趟才用真实收盘价覆盖。
+    let r30 = { ok: false, written: 0, logs: ['[r30-fill] 未执行'] };
+    try {
+      r30 = await runRange30Fill(env, {
+        date: d26,
+        logs: logs26,
+        endAtDate: false,
+        overwrite: false
+      });
+    } catch (e) {
+      r30 = { ok: false, written: 0, logs: ['[r30-fill] 异常: ' + ((e && e.message) || e)] };
+      logs26.push(r30.logs[0]);
+    }
+    // ★★ [PRESENCE-0926 2026-11-16 用户报障「每到收盘又变了」] 在列次数必须赶在 09:27 定稿之前。
+    //
+    //   病根：第二十九条（排名第二的题材量比太小 ⇒ 整块作废）要读 `auction_presence`
+    //   （某票在最近 10 个交易日名单里出现过几天），而这张派生表原来只由 pg_cron 在北京 **09:30**
+    //   生成 —— 比 09:27 的定稿晚 3 分钟 ⇒ `tvrb-plan.js#r10DataReady` 恒 false
+    //   ⇒ 规则每天都被 §10「数据没到就放行」跳过 ⇒ 早上多选一个题材，等表到货后页面重算就翻脸
+    //   （11-16 实测：09:27 定稿 3 只 → 16:27 重算 1 只）。
+    //   ⇒ 名单此刻（09:25:28 已落库）就是最终版，这里直接调库内函数算一遍，把到货时间拉到 09:26。
+    //   §10：失败**不阻断**本轮（这是派生表，正确性不依赖它），但必须如实进日志。
+    //   ⚠️ 放在 r20 之后：`recompute_auction_presence` 只读 auction_watchlist，与本轮写入顺序无关，
+    //      放最后只是为了让「名单最终版」毫无疑问已经落库。
+    let pres26 = { ok: false, rows: 0, logs: ['[presence] 未执行'] };
+    try {
+      pres26 = await runPresenceRecompute(env, { date: d26, logs: logs26 });
+    } catch (e) {
+      pres26 = { ok: false, rows: 0, logs: ['[presence] 异常: ' + ((e && e.message) || e)] };
+      logs26.push(pres26.logs[0]);
+    }
     const result26 = {
       ok: r26.ok || r20.ok,
       today: r26.today,
@@ -10503,6 +12250,12 @@ async function dispatch(point, env, logs, opts) {
       dailyLegsWritten: legs26.written || 0,
       range20: r20,
       range20Written: r20.written || 0,
+      // ★★ [R30-CLOUD 2026-11-20] 30 日涨幅当天名单补位留痕
+      range30: r30,
+      range30Written: r30.written || 0,
+      // ★ [PRESENCE-0926] 第二十九条的必需输入（10/20 日窗口在列次数）本次重算留痕
+      presence: pres26,
+      presenceRows: pres26.rows || 0,
       // ★★ [LADDER26-TIMING 2026-11-12] 用户硬指标「9:26 完成、不超过 9:27」的度量。
       //   纯记录：⛔ 未在此加任何截止/跳过分支，执行顺序与业务分支一字未改。
       //   明天 9:26 跑完直接查 bidding_fetch_log（time_point=ladder26）即可核对：
@@ -10522,7 +12275,9 @@ async function dispatch(point, env, logs, opts) {
       ' 截止=' + LADDER26_DEADLINE_LABEL + ' overrun=' + result26.p0Overrun +
       ' | 猫抓补量比=' + ((r26.auc && r26.auc.written) || 0) + ' 只' +
       (r26.auc && r26.auc.names && r26.auc.names.length ? '（' + r26.auc.names.slice(0, 12).join(',') + '）' : '') +
-      ' | 20日补缺=' + result26.range20Written + ' 行 | 逐日腿=' + result26.dailyLegsWritten + ' 行');
+      ' | 20日补缺=' + result26.range20Written + ' 行 | 逐日腿=' + result26.dailyLegsWritten + ' 行' +
+      ' | 30日补缺=' + result26.range30Written + ' 行' +
+      ' | 在列次数=' + result26.presenceRows + ' 行');
     await persistRunResult(env, point, result26);
     return result26;
   }
@@ -10535,6 +12290,46 @@ async function dispatch(point, env, logs, opts) {
       ' 日志=' + JSON.stringify(logs20));
     await persistRunResult(env, point, result20);
     return result20;
+  }
+  if (point === 'range30') {
+    // [R30-CLOUD 2026-11-20] 手动补 30 日涨幅（当天名单）。
+    //   &date=YYYY-MM-DD 指定历史日；&overwrite=1 覆盖已有行（收盘回补必须开）；
+    //   &endAtDate=1 让窗口末日取 date 当天（默认：15:00 前取昨天、之后取今天）。
+    const logs30 = [];
+    const r30 = await runRange30Fill(env, {
+      date: (opts && opts.date) || '',
+      logs: logs30,
+      overwrite: !!(opts && opts.overwrite),
+      endAtDate: opts && opts.endAtDate === undefined
+        ? undefined : !!(opts && opts.endAtDate)
+    });
+    const result30 = Object.assign({}, r30, { logs: logs30 });
+    console.log('[auto-fetch] range30 云端补缺: ok=' + r30.ok + ' written=' + r30.written +
+      ' 目标=' + r30.targets + ' 日志=' + JSON.stringify(logs30));
+    await persistRunResult(env, point, result30);
+    return result30;
+  }
+  if (point === 'r30backfill') {
+    // ★★ [R30-METRICS-HEAL 2026-11-23 用户口径「今天不能重补下30日强势补位票的数据吗？也就是那两只，
+    //   现在数据只有三个，趋势图也是几乎空白的，能补吗？」]
+    //   补的正是「补位票在历史日【整行都不存在】」这个洞 —— extras 只补已存在行的字段，补不了没行。
+    //   参数：&date=YYYY-MM-DD 目标日（缺省北京今天）；&days=N 回看交易日数（默认 6）；
+    //         &stocks=名字A,名字B 只补指定票（缺省 = 前一交易日 30 日榜前 50 ∪ 20 日榜前 25）。
+    //   ⚠️ 花 1 次猫抓额度（区间一次请求）+ 0 额度的同花顺批量日线；
+    //      ⛔ 只写 market_metrics，不碰 auction_watchlist / 不改任何选股规则。
+    const bfLogs = [];
+    const bfStocks = String((opts && opts.stocks) || '').split(',').map(s => s.trim()).filter(Boolean);
+    const bf = await runInjectedMetricsBackfill(env, {
+      date: (opts && opts.date) || '',
+      days: (opts && opts.days) || 0,
+      stocks: bfStocks,
+      logs: bfLogs
+    });
+    const bfOut = Object.assign({}, bf, { logs: bfLogs });
+    console.log('[auto-fetch] r30backfill 补位票行情补建: ok=' + bf.ok + ' created=' + bf.created +
+      ' filled=' + bf.filled + ' 窗口=' + JSON.stringify(bf.dates) + ' 日志=' + JSON.stringify(bfLogs));
+    await persistRunResult(env, point, bfOut);
+    return bfOut;
   }
   if (point === 'divergedays') {
     // ★★ [LD-CLOUD 2026-11-13] 手动入口：立即（重）算「总龙分歧」判定并落库。
@@ -10622,8 +12417,11 @@ export default {
           return jsonResponse({ ok: false, error: '当前北京时间不在抓取时段（9:25~9:40=morning，15:00~16:30=close）' });
         }
       }
-      if (!['morning', 'close', 'closepost', 'extras', 'snapshot', 'ladder', 'ladder26', 'range20', 'divergedays', 'jiwang'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|closepost|extras|snapshot|ladder|ladder26|range20|divergedays|jiwang|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；closepost 立即补写当天收盘列 / 记忘 / 总龙分歧收盘腿；extras 可附 &today=1 含当天；snapshot / ladder / ladder26 / range20 / divergedays 可附 &date=YYYY-MM-DD；divergedays 另可附 &days=N（补最近 N 个展示日，上限 20）与 &phase=close|intraday；jiwang 立即回补昨收盘结果）' });
+      // ★★ [R30-METRICS-HEAL 2026-11-23] 白名单必须与 dispatch 分支逐字对齐。
+      //   ⛔ 只加 dispatch 分支、忘了加这份白名单 ⇒ 请求在分发前就被拒（表现为
+      //   「改了代码但一点反应都没有」，比报错更难查）。两份清单永远同改。
+      if (!['morning', 'close', 'closepost', 'extras', 'snapshot', 'ladder', 'ladder26', 'range20', 'range30', 'r30backfill', 'divergedays', 'jiwang'].includes(point)) {
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|closepost|extras|snapshot|ladder|ladder26|range20|range30|r30backfill|divergedays|jiwang|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；closepost 立即补写当天收盘列 / 记忘 / 总龙分歧收盘腿；extras 可附 &today=1 含当天；snapshot / ladder / ladder26 / range20 / range30 / divergedays 可附 &date=YYYY-MM-DD；range30 另可附 &overwrite=1 与 &endAtDate=1；r30backfill 另可附 &days=N（默认 6 个交易日）与 &stocks=股票名1,股票名2（留空 = 30日榜前 50 ∪ 20日榜前 25）；divergedays 另可附 &days=N（补最近 N 个展示日，上限 20）与 &phase=close|intraday；jiwang 立即回补昨收盘结果）' });
       }
       // [JIWANG-SHOUGU-CLOUD 2026-11-08] 回补不受「当前时间必须在 9:25~16:30」限制，
       //   否则周末/夜间出事故时无法立即修复历史缺口。
@@ -10645,7 +12443,14 @@ export default {
           // ★★ [OVERWRITE 2026-11-13] closepost 修历史错值专用：`&overwrite=1` 才允许改写
           //   已有非空收盘值（如 11-13 板块ETF 被旧逻辑写成 0、正确值 8）。
           //   ⛔ 只有这个手动入口能开；cron 恒 false。
-          overwrite: url.searchParams.get('overwrite') === '1'
+          overwrite: url.searchParams.get('overwrite') === '1',
+          // ★★ [R30-CLOUD 2026-11-20] 不传 = 由运行时钟决定窗口末日（9:26 取昨收 / 16:03 取今收）；
+          //   历史日回补必须显式传 endAtDate=1，否则窗口末日会错退到目标日的前一天。
+          endAtDate: url.searchParams.has('endAtDate')
+            ? url.searchParams.get('endAtDate') === '1' : undefined,
+          // ★★ [R30-METRICS-HEAL 2026-11-23] r30backfill 专用：只补指定股票名（逗号分隔）。
+          //   留空 = 前一交易日 30 日榜前 50 ∪ 20 日榜前 25（数据驱动，不写死票名）。
+          stocks: url.searchParams.get('stocks') || ''
         });
         return jsonResponse(result, result.ok ? 200 : 500);
       } catch (e) {

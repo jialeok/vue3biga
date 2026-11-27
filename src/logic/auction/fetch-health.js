@@ -80,8 +80,31 @@ export async function diagnoseTodayAuction(date) {
   // 今天一行都没有 ⇒ 可能只是还没拉，这种情况下"名单未到"另有提示，不叠加本模块
   const rows = (state._auctionMemCache && state._auctionMemCache[date]) || [];
   if (rows.length === 0) return none;
-  // 行情已经到齐 ⇒ 无需提示
-  if (_todayDataArrived(date)) return none;
+  // 行情【主字段】到齐 ⇒ 无需提示（保留「竞价量/竞价涨幅/当天涨幅」这套既有语义，
+  // ⛔ 不动 morning-sync 的轮询停止判据，§11 默认无行为）。
+  const masterArrived = _todayDataArrived(date);
+  // ★ [YEST-COL 2026-11-19] 但「到齐」还要看【昨日成交量】这一列：
+  //   11-19 实测 morning 猫抓两把 key 403 ⇒ market_metrics 38 行全靠 9:29 前端 ths-patch
+  //   的快照腿补了竞价量+竞价涨幅 ⇒ 旧判据认定「已到齐」⇒ 提示条/「用同花顺补今日」按钮
+  //   【根本不出现】⇒ K 线腿（腾讯 qfq，0 猫抓额度）永远没机会补昨量 ⇒ 第一页「昨成交量」
+  //   与「占比」两列整天都是 '-'，题材量比也跟着拿不到基准。
+  //   ⇒ 主字段到齐、但昨量整列缺失时，仍要给提示（文案与按钮由 UI 层呈现），
+  //     用户点一次「用同花顺补今日」即可走完整 K 线腿补昨量。
+  //   ⚠️ 覆盖率判据（与 buy-data-gate 同款）：低于 30% 才算「整列缺失」；
+  //      个别票（新股/停牌）天然没有昨量 ⇒ 不误报（§10 缺失不伪装）。
+  if (masterArrived) {
+    const hasYest = rows.filter(function(r) {
+      return r && (_hasVal(r.yestVolume) || _hasVal(r.yest_volume));
+    }).length;
+    if (rows.length > 0 && hasYest / rows.length >= 0.3) return none;
+    return {
+      need: true,
+      level: 'info',
+      title: '今日竞价量已到，昨日成交量整列缺失',
+      text: '9:25 自动抓取的行情未包含昨日成交量（竞价量比仍只认猫抓，额度用尽就留空）。' +
+        '点右侧「用同花顺补今日」可用 K 线数据补上昨量与占比（0 猫抓额度，不动竞价量比）。',
+    };
+  }
 
   const covered = rows.length;
   const head = '今日竞价行情尚未抓取到（名单已就绪 ' + covered + ' 只）';
@@ -128,6 +151,10 @@ export async function diagnoseTodayAuction(date) {
     title: head,
     text: '今天还没有自动抓取记录（定时任务可能未触发）。这不是你的操作问题，稍后再刷新一次即可。',
   };
+}
+
+function _hasVal(v) {
+  return v !== null && v !== undefined && String(v).trim() !== '';
 }
 
 /** 仅供测试 / 诊断 */

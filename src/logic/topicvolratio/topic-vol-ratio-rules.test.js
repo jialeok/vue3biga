@@ -20,7 +20,9 @@
 //   · 能入选的排名第一题材 平均竞价量比 < 25 ⇒ cashAlert.show = true（判据看【能入选的】，
 //     量比更高但数量不足被排除的题材不算）；
 //   · 边界 25 不触发（用户说的是「小于 25」）；缺量比 / 无入选题材都不触发（§10）；
-//   · ★ 命中提醒时【选股一行未改】（票名 / 档位 / 只数 / notes 与量比达标时逐项一致）。
+//   · ★ 命中提醒时【选股行未改】（票名 / 档位 / notes 与量比达标时逐项一致）。
+//     ★★ [BUYABLE-COUNT 2026-11-19 用户口径] 例外：顶部「选股 N 只」改为【今天能下单的只数】，
+//        命中提醒时每行都是【分歧日不买】⇒ 计数为 0（选股行本身一行未改，只是不给买点）。
 //
 // 覆盖【第十六轮 · 空仓提醒下的买点改写】（2026-10-16 用户口径）：
 //   · 命中空仓提醒（非退潮日）⇒ 买点侧每行的动作标签【覆盖式】改写成【分歧日不买】
@@ -81,6 +83,11 @@ import {
   SWITCH_RULE_NO,
   NEW_DRAGON_TAG,
   NEW_DRAGON_TONE,
+  // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] 第二十八条买点顺延到次日
+  NEXT_DAY_BUY_TAG,
+  NEXT_DAY_BUY_TONE,
+  // ★ 九修：次日承接块的标签 = 【继承买】
+  NEXT_DAY_CARRY_TAG,
   NEW_DRAGON_TOP_N,
   NEW_DRAGON_LOOKBACK_DAYS,
   NEW_DRAGON_CERTIFY_TOP_N,
@@ -100,6 +107,9 @@ import {
   WEAK_HUDDLE_TONE,
   WEAK_HUDDLE_BLOCK_TOPIC,
   WEAK_HUDDLE_TOP_N,
+  // ★★ [RULE-35 2026-11-18 用户口径] 第三十五条【30日涨幅抱团（补涨让路版）】
+  TOP30_HUDDLE_RULE_NO,
+  TOP30_HUDDLE_TAG,
   // ★★ [CATCH-UP 2026-10-27 用户口径] 第三十一条【补涨题材】
   CATCH_UP_RULE_NO,
   CATCH_UP_TAG,
@@ -121,6 +131,11 @@ import {
 } from './topic-vol-ratio-rules.js';
 // ★★ [CORE-CAT 2026-10-22] 「题材 → 核心词大类」归一的唯一实现（文化传媒 ⇒ AI应用）
 import { makeCoreTopicResolver } from '../topic/core-category.js';
+// ★★ [EBB-TOPIC-MEMBER 2026-11-27] 退潮题材【票级】判据（第二十条粒度细化）的唯一实现
+import { makeEbbTopicBan, ebbBanTopicsOf, buildLeaderEventTimeline } from './tvrb-utils.js';
+// ★ [EBB-TOPIC-MEMBER 2026-11-27] 退潮题材字段级灰化的区别标签
+import { EBB_TOPIC_BAN_TAG } from './tvrb-constants.js';
+import { _applyEbbTopicBan } from './tvrb-blocks.js';
 // ★ [AUCTION-YIZI-UNIFY 2026-11-16] 一字标签唯一来源（断言必须比对常量，⛔ 不写字面量）
 import { AUCTION_YIZI_WAIT_TAG } from './auction-yizi-tag.js';
 import {
@@ -137,7 +152,8 @@ import {
 
 // ── 夹具 ─────────────────────────────────────────────────────────────────────────────────
 function m(name, opts) {
-  return Object.assign({
+  const o = opts || {};
+  const row = Object.assign({
     name: name,
     isYizi: false,
     pct: 20,
@@ -148,7 +164,14 @@ function m(name, opts) {
     code: '000001',
     countable: true,
     inheritSold: false
-  }, opts || {});
+  }, o);
+  // ★ [YIZI-FIXTURE 2026-11-20] `isYizi: true` ⇒ 竞价涨幅必须同时到涨停幅度（默认主板 10%）。
+  //   真实数据里这两件事【同源】：`isYizi` 就是「aucPct 打到涨停」的结论，不可能只标 true 而涨幅 5%。
+  //   ⚠️ 为什么必须补：竞价一字标签的唯一判据是 `auction-yizi-tag.js#isAuctionYiziPick`
+  //   （读 aucLimitUp / aucPct + 代码分板块），只写 `isYizi: true` 它【判不出】⇒ 标签为空 ⇒
+  //   断言「照选 + 挂标签」时会假红（[YIZI-NO-SHIFT] 改造中实际踩过一次）。
+  if (row.isYizi && o.aucPct === undefined) row.aucPct = 10;
+  return row;
 }
 
 function block(topic, rank, members) {
@@ -253,7 +276,7 @@ describe('tvrb · buildTopicVolRatioPlan（用户 2026-10-11 举例）', functio
   ]);
   // AI应用 5 只（平均量比 68，排 2 ⇒ 取 1 只）；龙一竞价涨停 ⇒ 顺延龙二
   const ai = block('AI应用', 2, [
-    m('金山办公', { aucVolRatio: 100, isYizi: true }),
+    m('金山办公', { aucVolRatio: 100, isYizi: true, aucPct: 10 }),
     m('三六零', { aucVolRatio: 60 }),
     m('昆仑万维', { aucVolRatio: 60 }),
     m('万兴科技', { aucVolRatio: 60 }),
@@ -261,7 +284,7 @@ describe('tvrb · buildTopicVolRatioPlan（用户 2026-10-11 举例）', functio
   ]);
   // 大消费 10 只（平均量比 45，排 3 ⇒ 取 2 只）；龙一竞价涨停 ⇒ 顺延龙二、龙三
   const cons = block('大消费', 3, [
-    m('贵州茅台', { aucVolRatio: 45, isYizi: true }),
+    m('贵州茅台', { aucVolRatio: 45, isYizi: true, aucPct: 10 }),
     m('五粮液', { aucVolRatio: 45 }),
     m('泸州老窖', { aucVolRatio: 45 }),
     m('洋河股份', { aucVolRatio: 45 }),
@@ -288,27 +311,32 @@ describe('tvrb · buildTopicVolRatioPlan（用户 2026-10-11 举例）', functio
     expect(plan.blocks.map(function(b) { return b.topic; })).toEqual(['AI应用', '大消费']);
   });
 
-  it('AI应用（5 只 → mid）：龙一竞价涨停 ⇒ 顺延取龙二三六零', function() {
+  it('AI应用（5 只 → mid）：龙一竞价一字 ⇒ 【照选 + 打标签】，⛔ 不再顺延龙二', function() {
     const aiBlk = plan.blocks[0];
     expect(aiBlk.tier).toBe('mid');
     expect(aiBlk.pickCount).toBe(1);
-    expect(aiBlk.picks.map(function(p) { return p.name; })).toEqual(['三六零']);
-    expect(aiBlk.picks[0].dragonLabel).toBe('龙二');
+    // ★ [YIZI-NO-SHIFT 2026-11-20 用户口径] 一字照选 + 占一档（旧口径「顺延取龙二 三六零」已废除）
+    expect(aiBlk.picks.map(function(p) { return p.name; })).toEqual(['金山办公']);
+    expect(aiBlk.picks[0].dragonLabel).toBe('龙一');
+    // 标签唯一来源 = auction-yizi-tag.js（plan 层 annotateAuctionYizi 统一挂）
+    expect(aiBlk.picks[0].auctionYiziTag).toBeTruthy();
   });
 
-  it('大消费（10 只 → big）：龙一竞价涨停 ⇒ 顺延取龙二、龙三', function() {
+  it('大消费（10 只 → big）：龙一竞价一字 ⇒ 照选占一档，另一只取龙二', function() {
     const cBlk = plan.blocks[1];
     expect(cBlk.tier).toBe('big');
     expect(cBlk.pickCount).toBe(2);
-    expect(cBlk.picks.map(function(p) { return p.name; })).toEqual(['五粮液', '泸州老窖']);
-    expect(cBlk.picks.map(function(p) { return p.dragonLabel; })).toEqual(['龙二', '龙三']);
+    // 名额还是 2 只（用户「选股数量要求还是和原来一样」）⇒ 龙一（一字）+ 龙二
+    expect(cBlk.picks.map(function(p) { return p.name; })).toEqual(['贵州茅台', '五粮液']);
+    expect(cBlk.picks.map(function(p) { return p.dragonLabel; })).toEqual(['龙一', '龙二']);
   });
 
-  it('序号连续（1 起）、被顺延的竞价涨停票写进 skippedNames', function() {
+  it('序号连续（1 起）；一字不再进 skippedNames', function() {
     expect(plan.blocks[0].picks[0].seq).toBe(1);
     expect(plan.blocks[1].picks.map(function(p) { return p.seq; })).toEqual([1, 2]);
-    expect(plan.blocks[0].skippedNames).toEqual(['龙一金山办公']);
-    expect(plan.blocks[1].skippedNames).toEqual(['龙一贵州茅台']);
+    // ⛔ 旧口径「被顺延的竞价涨停票写进 skippedNames」已废除：一字照选，skipped 恒空
+    expect(plan.blocks[0].skippedNames).toEqual([]);
+    expect(plan.blocks[1].skippedNames).toEqual([]);
   });
 
   it('平均量比按【有值行的均值】算出并写进块', function() {
@@ -330,15 +358,21 @@ describe('tvrb · buildTopicVolRatioPlan（用户 2026-10-11 举例）', functio
 
 // ── 边界与 §10 ───────────────────────────────────────────────────────────────────────────
 describe('tvrb · 边界与 §10', function() {
-  it('题材内成员全部竞价涨停 ⇒ qualified=false、picks 为空（不递补其它题材）', function() {
+  it('题材内成员全部竞价涨停 ⇒ 照常选（全挂待下杀买标签），⛔ 不再判「没有可买的票」', function() {
+    // ⚠️ 量比给 60（≥ 25）：本条要验的是【一字能不能被选出来】。若沿用夹具默认的 5 会触发
+    //    空仓提醒（每个题材的平均竞价量比 < 25）⇒ 每行改标【分歧日不买】⇒ 「选股 N 只」按
+    //    可下单只数计就是 0，与「一字照选」这件事纠缠在一起，测不出本条要验的口径。
     const b = block('X', 1, [
-      m('甲', { isYizi: true }), m('乙', { isYizi: true }),
-      m('丙', { isYizi: true }), m('丁', { isYizi: true })
+      m('甲', { isYizi: true, aucVolRatio: 60 }), m('乙', { isYizi: true, aucVolRatio: 60 }),
+      m('丙', { isYizi: true, aucVolRatio: 60 }), m('丁', { isYizi: true, aucVolRatio: 60 })
     ]);
     const plan = buildTopicVolRatioPlan([b], dragonMap([['甲', 1], ['乙', 2], ['丙', 3], ['丁', 4]]), {});
-    expect(plan.blocks[0].qualified).toBe(false);
-    expect(plan.blocks[0].picks).toHaveLength(0);
-    expect(plan.pickCount).toBe(0);
+    // ★ [YIZI-NO-SHIFT 2026-11-20] 一字算可买 ⇒ 4 只（mid 档）取 1 只 = 龙一，且带标签。
+    //   旧口径「qualified=false / picks 为空」已废除（那正是用户 11-20 否掉的「顺延不出票」）。
+    expect(plan.blocks[0].qualified).toBe(true);
+    expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['甲']);
+    expect(plan.blocks[0].picks[0].auctionYiziTag).toBe(AUCTION_YIZI_WAIT_TAG);
+    expect(plan.pickCount).toBe(1);
   });
 
   it('无龙位（创业板 / 科创板）的成员不进候选', function() {
@@ -350,8 +384,9 @@ describe('tvrb · 边界与 §10', function() {
     expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['主板甲']);
   });
 
-  it('可买（非一字）的票不足本档只数 ⇒ 少取，⛔ 不补位', function() {
-    // big 档要 2 只，但只有 1 只非一字
+  it('big 档名额 2 只：一字【算可买】⇒ 龙一（一字）+ 龙二买满，⛔ 不再因一字「少取」', function() {
+    // ★ [YIZI-NO-SHIFT 2026-11-20] 旧口径只数「非一字」的票 ⇒ 以为只有 1 只可买 ⇒ 少取。
+    //   现在一字照选占一档 ⇒ 名额照旧买满 2 只（用户「选股数量要求还是和原来一样」）。
     const b = block('Z', 1, [
       m('龙一', { isYizi: true }), m('龙二'), m('龙三', { isYizi: true }),
       m('龙四', { isYizi: true }), m('龙五', { isYizi: true }),
@@ -362,8 +397,21 @@ describe('tvrb · 边界与 §10', function() {
       ['龙六', 6], ['龙七', 7], ['龙八', 8], ['龙九', 9]]);
     const plan = buildTopicVolRatioPlan([b], dm, {});
     expect(plan.blocks[0].tier).toBe('big');
+    expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['龙一', '龙二']);
+    expect(plan.blocks[0].notes.join('\n')).not.toContain('不足 2 只');
+  });
+
+  it('【连续停牌】仍占档不补位（与一字的差异是本轮刻意保留的）', function() {
+    // 龙一停牌 ⇒ 占掉一档 ⇒ big 档 2 只名额只剩 1 个 ⇒ 只取龙二
+    const b = block('S', 1, [
+      m('停一'), m('龙二'), m('龙三'), m('龙四'), m('龙五'),
+      m('龙六'), m('龙七'), m('龙八'), m('龙九')
+    ]);
+    const dm = dragonMap([['停一', 1], ['龙二', 2], ['龙三', 3], ['龙四', 4], ['龙五', 5],
+      ['龙六', 6], ['龙七', 7], ['龙八', 8], ['龙九', 9]]);
+    const plan = buildTopicVolRatioPlan([b], dm, { buySkipNames: new Set(['停一']) });
     expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['龙二']);
-    expect(plan.blocks[0].notes.join('\n')).toContain('不足 2 只');
+    expect(plan.blocks[0].notes.join('\n')).toContain('连续停牌');
   });
 
   it('空题材列表 ⇒ 空计划（不抛错）', function() {
@@ -383,21 +431,29 @@ describe('tvrb · 边界与 §10', function() {
 
 // ── 第二轮 · 买点块 = 决策看板形状 + finishBuyBlock 收口 ────────────────────────────────────
 describe('tvrb · 买点块由决策看板的收口函数打标签', function() {
-  // AI应用 4 只（mid 档 ⇒ 取 1 只）：龙一竞价一字 ⇒ 顺延取龙二【三六零】
+  // AI应用 4 只（mid 档 ⇒ 取 1 只）：龙位最前 = 龙一【三六零】
+  //
+  // ★★ [YIZI-NO-SHIFT 2026-11-20] 本组夹具刻意让【龙一】是普通票、不是竞价一字，两个原因：
+  //   ① 一字那一路（照选 + 占一档 + 挂「竞价一字涨停 · 等下杀买」）已由本文件前两组用例验完
+  //      （「AI应用 mid」「题材内成员全部竞价涨停」「big 档名额买满」）；
+  //   ② 这里要验的是【决策看板收口函数在常规买点行上打的占比 / 动作标签】。龙一若是一字，
+  //      它同时会带「竞价一字涨停 · 等下杀买」这枚展示标签，本组断言会被两套措辞纠缠。
+  //   ⚠️ 金山办公保留在本题材里但【不给龙位】（真实数据里是 688 科创板，本来就没龙位）
+  //      ⇒ 顺带锁住「无龙位的成员不进候选」这条既有口径。
   function aiTopic() {
     return block('AI应用', 1, [
-      m('金山办公', { aucVolRatio: 60, isYizi: true, aucShare: 9, aucPct: 10 }),
-      m('三六零', { aucVolRatio: 60, aucShare: 6, code: '601360' }),
+      m('三六零', { aucVolRatio: 60, aucShare: 9, code: '601360' }),
       m('昆仑万维', { aucVolRatio: 60, aucShare: 6, code: '300418' }),
-      m('汤姆猫', { aucVolRatio: 60, aucShare: 6, code: '300459' })
+      m('汤姆猫', { aucVolRatio: 60, aucShare: 6, code: '300459' }),
+      m('金山办公', { aucVolRatio: 60, aucShare: 6, code: '688111' })
     ]);
   }
-  const dm = dragonMap([['金山办公', 1], ['三六零', 2], ['昆仑万维', 3], ['汤姆猫', 4]]);
+  const dm = dragonMap([['三六零', 1], ['昆仑万维', 2], ['汤姆猫', 3]]);
 
   /** 一个完整的标记上下文（= decision-collect#_actionContext 的出口形状） */
   function fullCtx(over) {
     return Object.assign({
-      prevDragonNames: new Set(['金山办公']),
+      prevDragonNames: new Set(['三六零']),
       prevBuyNames: new Set(['三六零']),
       prevBought: new Set(),
       prevBoughtTopics: new Set(['AI应用']),
@@ -414,8 +470,8 @@ describe('tvrb · 买点块由决策看板的收口函数打标签', function() 
     expect(b.block.members).toHaveLength(4);
     // picks 上必须预置 aucShare / dragonRank（收口跑在派生徽标之前，缺了就判不出先卖后买）
     expect(b.picks[0].name).toBe('三六零');
-    expect(b.picks[0].dragonRank).toBe(2);
-    expect(b.picks[0].aucShare).toBe(6);
+    expect(b.picks[0].dragonRank).toBe(1);
+    expect(b.picks[0].aucShare).toBe(9);
     expect(b.picks[0].code).toBe('601360');
     // 规则编号借决策看板买点段的 ①（⛔ 不另立一套编号）
     expect(b.ruleNo).toBe(RULE_NO.FIRST);
@@ -458,7 +514,7 @@ describe('tvrb · 买点块由决策看板的收口函数打标签', function() 
   it('占比达标 ⇒ 动作标签 = 决策看板的【竞价买】', function() {
     const plan = buildTopicVolRatioPlan([aiTopic()], dm, { ctx: fullCtx() });
     const p = plan.blocks[0].picks[0];
-    expect(p.aucShareText).toBe('6.0%');       // 占比展示（1 位小数，缺数据才不渲染）
+    expect(p.aucShareText).toBe('9.0%');       // 占比展示（1 位小数，缺数据才不渲染）
     expect(p.aucShareTone).toBe('strong');
     expect(p.aucSharePass).toBe(true);
     expect(p.buyActionTag).toBe(BUY_NOW_TAG);
@@ -466,7 +522,7 @@ describe('tvrb · 买点块由决策看板的收口函数打标签', function() 
   });
 
   it('占比不达标 + 昨天真买过 ⇒ 【尾盘买（先卖后买）】（先卖后买档，⛔ 不标持有）', function() {
-    // ⚠️ 刻意【不给龙一龙位】：本题材龙一（金山办公）在真实数据里是 688 科创板，本来就没有龙位。
+    // ⚠️ 刻意【不给龙一龙位】：金山办公在真实数据里是 688 科创板，本来就没有龙位。
     //    若给它 rank 1 且标成竞价一字，这一档会被【龙一字持有】接管（见下一条用例）——
     //    那条是另一条规则，本用例要验的是【纯先卖后买】。
     const topics = [block('AI应用', 1, [
@@ -487,20 +543,38 @@ describe('tvrb · 买点块由决策看板的收口函数打标签', function() 
     expect(p.position).toBe('');
   });
 
-  it('同题材今日龙一竞价一字 ⇒ 占比不达标改标【龙一字持有】（同一份规则的另一档，自动生效）', function() {
+  it('同题材今日龙一竞价一字 ⇒ 后排改标【龙一字持有】（同一份规则的另一档，自动生效）', function() {
+    // ★★ [YIZI-NO-SHIFT 2026-11-20] 一字【照选】之后，买点里会【同时】有龙一和龙二（big 档 2 只）：
+    //   · picks[0] = 龙一 金山办公（一字本身，照选占一档）；
+    //   · picks[1] = 龙二 三六零（占比 0.4% 不达标 + 昨天真买过 ⇒ 原本该给【尾盘买（先卖后买）】）。
+    //   这一档落在【龙二】身上：`_isDragonYiziHoldPick` 要求「本股不是龙一」
+    //   ⇒ 龙一自己不会被本档接管（它也不会被判成「被龙一带上去的后排」）。
+    //   ⚠️ 改口径前这条用例是 mid 档（龙一被跳过、只剩龙二 1 只）⇒ 现在必须 big 档才能同时拿到两只。
     const topics = [block('AI应用', 1, [
       m('金山办公', { aucVolRatio: 60, isYizi: true, aucShare: 9 }),
       m('三六零', { aucVolRatio: 60, aucShare: 0.4 }),
       m('昆仑万维', { aucVolRatio: 60, aucShare: 0.4 }),
-      m('汤姆猫', { aucVolRatio: 60, aucShare: 0.4 })
+      m('汤姆猫', { aucVolRatio: 60, aucShare: 0.4 }),
+      m('甲股', { aucVolRatio: 60 }), m('乙股', { aucVolRatio: 60 }),
+      m('丙股', { aucVolRatio: 60 }), m('丁股', { aucVolRatio: 60 }), m('戊股', { aucVolRatio: 60 })
     ])];
-    const plan = buildTopicVolRatioPlan(topics, dm, {
+    const bigDm = dragonMap([
+      ['金山办公', 1], ['三六零', 2], ['昆仑万维', 3], ['汤姆猫', 4],
+      ['甲股', 5], ['乙股', 6], ['丙股', 7], ['丁股', 8], ['戊股', 9]
+    ]);
+    const plan = buildTopicVolRatioPlan(topics, bigDm, {
       ctx: fullCtx({ prevBought: new Set(['三六零']) })
     });
-    const p = plan.blocks[0].picks[0];
-    expect(p.aucSharePass).toBe(false);
-    // 被龙一带着走 ⇒ 不算走弱 ⇒ 不改【先卖后买】
-    expect(p.buyActionTag).toBe(DRAGON_YIZI_HOLD_TAG);
+    const blk = plan.blocks[0];
+    expect(blk.tier).toBe('big');
+    expect(blk.picks.map(function(x) { return x.name; })).toEqual(['金山办公', '三六零']);
+    // 龙一（一字）自己：照选 + 挂「等下杀买」标签，⛔ 不会被【龙一字持有】接管
+    expect(blk.picks[0].auctionYiziTag).toBe(AUCTION_YIZI_WAIT_TAG);
+    expect(blk.picks[0].buyActionTag).not.toBe(DRAGON_YIZI_HOLD_TAG);
+    // 后排（龙二）：占比不达标，但被一字封板的龙一带上去 ⇒ 标【龙一字持有】，不改【先卖后买】
+    const back = blk.picks[1];
+    expect(back.aucSharePass).toBe(false);
+    expect(back.buyActionTag).toBe(DRAGON_YIZI_HOLD_TAG);
   });
 
   it('buy 槽位：第 1 块 → heavy、第 2 块 → light；三个兜底槽位恒 null（形状契约）', function() {
@@ -711,7 +785,12 @@ describe('tvrb · 空仓提醒（入选题材里排名第一 平均量比 < 25 �
     expect(plan.cashAlert).toEqual(buildCashAlert(null));
   });
 
-  it('★ 命中提醒时【选股一行未改】：档位 / 只数 / 票名 / notes 与「量比达标」时逐项一致', function() {
+  // ★★ [BUYABLE-COUNT 2026-11-19 用户口径] 标题与「只数」断言改了，但**选股行仍然一行未改**：
+  //   「选股 N 只」现在数的是【今天真能下单】的只数（判据 `_isBuyablePick`）——
+  //   命中空仓提醒时每一行都挂着【分歧日不买】⇒ 一只都不能下单 ⇒ 计数必然是 0。
+  //   ⚠️ 这是用户明确要的口径（「可以改下计数那里」），⛔ 不是选股行变了：
+  //     块档位 / 块名额 / 票名 / 客观数据 仍然逐项一致（下面继续断言）。
+  it('★ 命中提醒时【选股行未改】：档位 / 票名 / notes 一致；但「能下单只数」按新口径为 0', function() {
     const low = todayFixtures(21.51);
     const ok = todayFixtures(30);
     const pLow = buildTopicVolRatioPlan(low.topics, low.dm, {});
@@ -724,8 +803,10 @@ describe('tvrb · 空仓提醒（入选题材里排名第一 平均量比 < 25 �
       .toEqual(pOk.blocks.map(function(b) { return b.topic + '|' + b.tier + '|' + b.pickCount; }));
     expect(pLow.blocks[0].picks.map(function(p) { return p.name; }))
       .toEqual(pOk.blocks[0].picks.map(function(p) { return p.name; }));
-    expect(pLow.pickCount).toBe(pOk.pickCount);
-    expect(pLow.pickCount).toBe(2);
+    // ★★ [BUYABLE-COUNT 2026-11-19] 「选股 N 只」= 今天能下单的只数：
+    //   命中提醒 ⇒ 两行都被覆盖成【分歧日不买】⇒ 0 只；未命中 ⇒ 2 只（big 档取 2）。
+    expect(pLow.pickCount).toBe(0);
+    expect(pOk.pickCount).toBe(2);
     // 说明文字：★★ [WEAK-HUDDLE 2026-10-27] 命中提醒时说明区【只多一条】第三十条的留痕
     //   （用户口径要求本条必须写明「判不出 / 仍然空仓」，所以「提醒不进 notes」这条旧契约放宽为
     //     「常规选股说明一行未改、只追加第三十条那一条」）；未命中时那条不出现。
@@ -735,10 +816,20 @@ describe('tvrb · 空仓提醒（入选题材里排名第一 平均量比 < 25 �
     const _isR10GateNote = function(s) {
       return String(s).indexOf('· 十日涨幅候补】排名第一的入选题材') >= 0;
     };
-    const _isWhNote = function(s) {
-      return !_isR10GateNote(s) && String(s).indexOf('第' + WEAK_HUDDLE_RULE_NO + '条') >= 0;
+    // ★★ [RULE-35 2026-11-18] 第三十五条的留痕也算「额外说明」（空仓日必然产出一条：
+    //   要么「判不出 ⇒ 不接管」，要么「前三没有同题材 ⇒ 回到三十一条」）。
+    //   ⚠️ 这一条【必须写在 _isWhNote 之前】：35 的说明文本里会提到「第三十条」三个字
+    //      （「第三十条/第三十一条/第三十二条照常生效」），宽松匹配会把它误算进第三十条那一条。
+    const _isT30Note = function(s) {
+      return String(s).indexOf('第' + TOP30_HUDDLE_RULE_NO + '条') >= 0;
     };
-    const _isExtra = function(s) { return _isWhNote(s) || _isR10GateNote(s); };
+    const _isWhNote = function(s) {
+      // ⚠️ 精确到【第三十条 · 弱势切抱团】这个带标签的形状，⛔ 不用宽松的「含第N条」——
+      //   宽松匹配会被别的规则说明里顺口提到的「第三十条」污染（本轮已实测踩到）。
+      return !_isR10GateNote(s) && !_isT30Note(s) &&
+        String(s).indexOf('【第' + WEAK_HUDDLE_RULE_NO + '条 · ') >= 0;
+    };
+    const _isExtra = function(s) { return _isWhNote(s) || _isR10GateNote(s) || _isT30Note(s); };
     expect(pLow.notes.filter(function(s) { return !_isExtra(s); })).toEqual(pOk.notes);
     expect(pLow.notes.filter(_isWhNote)).toHaveLength(1);
     expect(pLow.notes.filter(_isR10GateNote)).toHaveLength(1);
@@ -808,9 +899,11 @@ describe('tvrb · 空仓提醒下的买点改写（非退潮日 ⇒ 分歧日不
     expect(p.ebb).toBe(null);                  // 没有 ebbCtx ⇒ 不是退潮日（只有空仓提醒这一种成因）
     expect(p.cashAlert.show).toBe(true);
     expect(p.cashAlert.avgVolRatioText).toBe('10.00');
-    // 选股照旧：AI应用 10 只 ⇒ big 档 ⇒ 取 2 只
-    expect(p.pickCount).toBe(2);
+    // 选股照旧：AI应用 10 只 ⇒ big 档 ⇒ 取 2 只（行照常列出）
     expect(p.blocks[0].picks.map(function(x) { return x.name; })).toEqual(['甲一', '甲二']);
+    // ★★ [BUYABLE-COUNT 2026-11-19 用户口径] 但「选股 N 只」数的是【今天能下单的只数】：
+    //   两行都被覆盖成【分歧日不买】⇒ 一只都不能下单 ⇒ 0（旧断言写的是 2，即数行数）。
+    expect(p.pickCount).toBe(0);
     p.blocks[0].picks.forEach(function(x) {
       expect(x.buyActionTag).toBe(CASH_NO_BUY_TAG);
       expect(x.buyActionTone).toBe(CASH_NO_BUY_TONE);
@@ -2340,21 +2433,25 @@ describe('tvrb · ★ 买点侧【连续停牌】占掉名额、不再补位（S
     expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['票01', '票02']);
   });
 
-  it('★ 与【竞价一字】并存 ⇒ 语义不同：一字顺延补位（不占名额）、停牌占名额不补', function() {
+  it('★ 与【竞价一字】并存 ⇒ 语义不同：一字【占一档并出票】、停牌【占一档不出票】', function() {
     const members = [
-      m('一字票', { pct: 90, isYizi: true, code: '600001' }),   // 龙一：一字 ⇒ 顺延，不占名额
-      m('停牌票', { pct: 80, code: '600002' }),                  // 龙二：连续停牌 ⇒ 占掉 1 个名额
-      m('正常甲', { pct: 70, code: '600003' }),                  // 龙三：补上第 2 个名额
+      m('一字票', { pct: 90, isYizi: true, code: '600001' }),   // 龙一：一字 ⇒ 照选、占一档、出票
+      m('停牌票', { pct: 80, code: '600002' }),                  // 龙二：连续停牌 ⇒ 吃掉 1 个名额，但不出票
+      m('正常甲', { pct: 70, code: '600003' }),                  // 龙三：名额已用满 ⇒ 轮不到
       m('正常乙', { pct: 60, code: '600004' })
     ];
     for (let i = 5; i <= 14; i++) members.push(m('票' + i, { pct: 60 - i, code: '6000' + i }));
     const topics = [block('AI应用', 1, members)];
     const dm = rankDragonsWithPctMap(topics, null);
     const plan = buildTopicVolRatioPlan(topics, dm, { buySkipNames: new Set(['停牌票']) });
-    // 2 个名额：一字票不占 ⇒ 关键在停牌票占掉一个 ⇒ 只剩「正常甲」1 只
-    expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['正常甲']);
+    // ★★ [YIZI-NO-SHIFT 2026-11-20] 旧口径是「一字不占名额 ⇒ 只剩正常甲」；现在：
+    //   一字【占一档 + 出票 + 挂「等下杀买」】，停牌【占一档但不出票】⇒ 2 档用尽 ⇒ 只有一字那一只。
+    //   两件事的差别不再是「占不占名额」，而是【出不出票】—— 这正是用户 11-20 要的口径：
+    //   名额不被一白白浪费，也不再顺延到后排（顺延 = 可能买进后排票）。
+    expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['一字票']);
+    expect(plan.blocks[0].picks[0].auctionYiziTag).toBe(AUCTION_YIZI_WAIT_TAG);
     const notes = plan.blocks[0].notes.join('\n');
-    expect(notes).toContain('竞价涨停');
+    expect(notes).toContain('竞价一字涨停');
     expect(notes).toContain('连续停牌');
   });
 
@@ -2982,19 +3079,148 @@ describe('tvrb · [SWITCH] 经 buildTopicVolRatioPlan：切换日买点侧 = 新
     expect(plan.newDragon.rank).toBeNull();          // ⛔ 不是题材排名，不给圆点
   });
 
-  it('★ 新龙那一行的动作标签 = 【新龙买】，客观数据仍在（走过 finishBuyBlock）', function() {
-    const plan = build();
+  it('★ 第二十八条说明【上方】必须有「总龙一事件轴」小表（用户 2026-11-27 口径）', function() {
+    // ⚠️ 事件轴写在「今天不判退潮」那条说明【上方】，它的前置闸门是 ebbCtx.ready ⇒ 必须置 true
+    const plan = build({ date: '2026-10-22', ebbCtx: { ready: true, top5: TOP5 } });
+    const all = plan.notes.join('\n');
+    expect(all).toContain('〔事件轴〕新华传媒');
+    expect(all).toContain('首次退潮 10-13');
+    expect(all).toContain('二次确认退潮 10-20');
+    expect(all).toContain('切换日 10-22〔本题〕');
+    expect(all).toContain('无三次退潮');
+    // 顺序：事件轴必须排在【第二十八条 · 周期状态】上面（notes 按数组顺序渲染）
+    expect(all.indexOf('〔事件轴〕')).toBeLessThan(all.indexOf('【第二十八条 · 周期状态】'));
+    // 省空间：整条只有一行
+    const line = plan.notes.filter(function(x) { return String(x).indexOf('〔事件轴〕') === 0; })[0];
+    expect(!!line).toBe(true);
+    expect(String(line).indexOf('\n')).toBe(-1);
+  });
+
+  it('★ 事件轴还必须挂在【第二十八条那张卡片】上（用户 17:33 截图：卡片里没看到）', function() {
+    const p = build({ date: '2026-10-22', ebbCtx: { ready: true, top5: TOP5 } });
+    expect(p.newDragon).not.toBeNull();
+    expect(String(p.newDragon.timeline || '')).toContain('〔事件轴〕新华传媒');
+    expect(String(p.newDragon.timeline || '')).toContain('无三次退潮');
+    expect(String(p.newDragon.timeline || '').indexOf('\n')).toBe(-1);
+    // 卡片自己的选择理由一个字不动（事件轴是【另起一行】渲染，⛔ 不拼进 reason）
+    expect(String(p.newDragon.reason || '')).not.toContain('〔事件轴〕');
+  });
+
+  it('★ 切换日：新题材选出的票若沾了老周期题材字段（11-18 临时题材羊字辈）⇒ 灰化、不给买点', function() {
+    // 11-18 真库：东方海洋 = 水产品,农业,东方,羊字辈；光洋股份 = 机器人概念,低空经济,羊字辈
+    // 这里用同一套机制的最小形状：老龙一 新华传媒 今天题材串含临时词「羊字辈」，新龙票也含 ⇒ 命中
+    const topics118 = function(n) {
+      const m = { '新华传媒': 'AI应用,羊字辈', '冰山冷热': '电子通信算力,羊字辈' };
+      return m[n] || '';
+    };
+    const p = build({
+      date: '2026-10-22',
+      ebbCtx: { ready: true, top5: TOP5 },
+      stockTopicsOf: topics118,
+      tempTopicTokens: ['羊字辈']
+    });
+    expect(p.switchDay).not.toBeNull();
+    expect(p.newDragon).not.toBeNull();
+    const nd = p.newDragon.picks[0];
+    expect(nd.name).toBe('冰山冷热');
+    expect(nd.ebbTopicBlocked).toBe(true);
+    expect(nd.buyActionTag).toBe(EBB_TOPIC_BAN_TAG);
+    expect(nd.actionNote).toContain('切换日');
+    expect(nd.actionNote).toContain('羊字辈');
+        // ★★ [ROW-GRAY 2026-11-27] 块不再灰（用户：不要整体显示灰），只灰被否的那一行
+    expect(!!p.newDragon.ebbTopicGray).toBe(false);
+    expect(p.newDragon.picks[0].noBuyRowGray).toBe(true);
+    expect(p.buyNames.has('冰山冷热')).toBe(false);
+    // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] 灰色行绝不继承 ⇒ 明天没有可承接的新龙
+    //   （用户原话：「灰色行的股票不要继承，这个非常重要，不然会误买，
+    //     因为灰色行的票的现在是错误的，没有买入的硬逻辑」）
+    expect(p.newDragon.nextDayBuy).toBeNull();
+    expect(p.notes.join('\n')).toContain('【没有】可承接的新龙');
+    // 题材转换思路必须写在卡片上，且点名：老周期题材 / 今天的题材串 / 禁买字段
+    const tt = String(p.newDragon.topicTransition || '');
+    expect(tt).toContain('〔题材转换〕');
+    expect(tt).toContain('老周期题材');
+    expect(tt).toContain('它今天的题材串 = AI应用,羊字辈');
+    expect(tt).toContain('老周期禁买字段');
+    expect(p.notes.join('\n')).toContain('【第二十八条 · 切换日】老周期退潮题材');
+  });
+
+  it('★ 块灰化要说明「同块没被牵连的那几只为什么看着灰」（11-19 华东重机）', function() {
+    const topicsOf = function(n) {
+      const m = { '华东重机': '电子/通信/算力', '华胜天成': 'AI应用,算力' };
+      return m[n] || '';
+    };
+    const ban = makeEbbTopicBan(['AI应用'], topicsOf);
+    const out = {
+      buyNames: new Set(['华东重机', '华胜天成']),
+      blocks: [{
+        topic: '新题材 · 电子/通信/算力',
+        picks: [
+          { name: '华东重机', buyActionTag: '新龙买', waitBuyTag: '竞价一字涨停 · 等下杀买', actionNote: '（原文）' },
+          { name: '华胜天成', buyActionTag: '竞价买', actionNote: '（原文）' }
+        ],
+        notes: []
+      }],
+      buy: { newDragon: null }
+    };
+    const res = _applyEbbTopicBan(out, ban, [], true);
+    expect(res.count).toBe(1);
+    expect(out.buyNames.has('华胜天成')).toBe(false);
+    expect(out.buyNames.has('华东重机')).toBe(true);          // ⛔ 可买名单不受牵连
+    expect(out.blocks[0].picks[0].buyActionTag).toBe('新龙买'); // ⛔ 标签一个字不改
+        expect(!!out.blocks[0].ebbTopicGray).toBe(false);       // ⛔ 块不灰
+    expect(out.blocks[0].picks[1].noBuyRowGray).toBe(true);  // ✅ 只灰这一行
+    const notes = out.blocks[0].notes.join('\n');
+    expect(notes).toContain('华胜天成');
+    expect(notes).not.toContain('华东重机');   // 没被牵连的票不进灰名单、也不灰
+    expect(notes).toContain('整块【不灰】');   // 只灰这一行，同块其它票正常显示
+    expect(out.blocks[0].picks[0].noBuyRowGray).toBeUndefined();   // 没被牵连的票【不灰】
+    expect(String(out.blocks[0].picks[0].actionNote)).toContain('（原文）');
+  });
+
+  it('★ 事件轴下面必须给出【每个事件的判定依据】（用户 2026-11-27：判断标准也要写进去）', function() {
+    const p = build({ date: '2026-10-22', ebbCtx: { ready: true, top5: TOP5 } });
+    const b = String(p.newDragon.timelineBasis || '');
+    expect(b).toContain('〔依据〕');
+    // 四个事件各自的出处，一条都不能少
+    expect(b).toContain('第二十五条');            // 首次分歧 = 首板后首个竞价涨幅<0
+    expect(b).toContain('竞价涨幅 < 0');
+    expect(b).toContain('第二十条');              // 首次退潮 = 停牌 / 占比不达标
+    expect(b).toContain('3.5%');
+    expect(b).toContain('第二十七条');            // 二次确认 = 第 2 次事件，无第三次
+    expect(b).toContain('无第三次');
+    expect(b).toContain('第二十八条');            // 切换日 = 后第 2 个交易日
+    expect(b).toContain('第 2 个交易日');
+  });
+
+  // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径 · 规则手册八修] 标签已从【新龙买】改成【次日买】：
+  //   选股结论不变，买点顺延到下一交易日（用户：「第二十八条选票是对的，但是买点不对，应该是在次日买」）。
+  it('★ 新龙那一行的动作标签 = 【次日买】+ 股票名删除符，客观数据仍在（走过 finishBuyBlock）', function() {
+    const plan = build({ date: '2026-10-22' });
     const picks = plan.newDragon.picks;
     expect(picks).toHaveLength(1);
     const p = picks[0];
     expect(p.name).toBe('冰山冷热');
-    expect(p.buyActionTag).toBe(NEW_DRAGON_TAG);
-    expect(p.buyActionTone).toBe(NEW_DRAGON_TONE);
+    expect(p.buyActionTag).toBe(NEXT_DAY_BUY_TAG);
+    expect(p.buyActionTone).toBe(NEXT_DAY_BUY_TONE);
+    expect(p.buyNextDay).toBe(true);                 // ★ 旗子：明天买（⛔ 不是今天买）
+    expect(p.nameDel).toBe(true);                    // ★ 视图据此打删除符
     expect(p.holdTag).toBe('');                      // 与「今天要买」互斥
     expect(p.position).toBe('');
     expect(p.dragonLabel).toBe('总龙三');            // 20日涨幅第 3 名（客观数据未被标签改写影响）
-    expect(p.actionNote).toContain('第二十八条');
-    expect(p.actionNote).toContain('新周期');
+    expect(p.actionNote).toContain('次日买');
+    expect(p.actionNote).toContain('延迟');
+    // ★ 明天该承接谁 —— 由收口时算出（灰行不继承）
+    expect(plan.newDragon.nextDayBuy).not.toBeNull();
+    expect(plan.newDragon.nextDayBuy.names).toEqual(['冰山冷热']);
+    expect(plan.newDragon.nextDayBuy.date).toBe('2026-10-22');
+  });
+
+  it('★★ [NEXT-DAY-BUY] 新龙那只票【今天不进 buyNames】（不是今天买的票），常规那只照旧进', function() {
+    const plan = build();
+    expect(plan.buyNames.has('冰山冷热')).toBe(false);   // ⛔ 今天不买 ⇒ 卖点侧不许标【持有】
+    expect(plan.buyNames.has('宁波东力')).toBe(true);    // 常规那只今天真买
+    expect(plan.buyNames.has('新华传媒')).toBe(false);   // 老龙一不买
   });
 
   it('★ 名次文案必须跟数据走：第 6 名时⛔ 绝不许写「上到前五」（2026-10-22 用户当场抓到的表述错误）', function() {
@@ -3053,7 +3279,7 @@ describe('tvrb · [SWITCH] 经 buildTopicVolRatioPlan：切换日买点侧 = 新
 
   it('新龙那只票进 buyNames（卖点侧「今天又进买点 ⇒ 持有」要用它）', function() {
     const plan = build();
-    expect(plan.buyNames.has('冰山冷热')).toBe(true);
+    expect(plan.buyNames.has('冰山冷热')).toBe(false);   // ★ 八修后：今天不买（次日买）
     expect(plan.buyNames.has('宁波东力')).toBe(true);
     expect(plan.buyNames.has('新华传媒')).toBe(false);   // 老龙一不买
   });
@@ -3062,6 +3288,18 @@ describe('tvrb · [SWITCH] 经 buildTopicVolRatioPlan：切换日买点侧 = 新
     const plan = build();
     expect(plan.buy.newDragon).toBe(plan.newDragon);
     expect(plan.buy.newDragon.picks[0].name).toBe('冰山冷热');
+  });
+
+  // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径 · 规则手册八修] 第二十八条【次日承接】的三条硬约束
+  //   （只继承一天 / 灰色行不继承 / 有说明文字）。
+  it('★★ [NEXT-DAY-BUY-4] 承接块**不在** plan 里（展示层补算）⇒ 规则层不再吃跨日输入、不再二次重算', function() {
+    // 即使把上一日名单塞进 opts，规则层也不该建块，更不该把它算进 buyNames / 选股数
+    const plan = build({ prevNextDayBuy: { date: '2026-10-21', names: ['光洋股份'], note: '' } });
+    expect(plan.nextDayCarry).toBeNull();
+    expect(plan.buy.nextDayCarry).toBeNull();
+    expect(plan.buyNames.has('光洋股份')).toBe(false);
+    // 今天新龙的 nextDayBuy 只来自今天自己选出的票（承接块不可能串进来 ⇒ 只继承一天）
+    expect(plan.newDragon.nextDayBuy.names).toEqual(['冰山冷热']);
   });
 
   it('切换日但【没有】符合条件的新龙 ⇒ 新龙行不出现 + 回落常规（仍只取一个题材）+ 原因可见', function() {
@@ -3840,6 +4078,32 @@ describe('tvrb · 第二十九条 十日涨幅 · 题材内选票（2026-11-17 �
     expect(notes).toContain('题材内选票');
   });
 
+  // ★★ [CASE-1123-HAILI 2026-11-26 用户报障] 11-23 半导体（6 只、量比 11.54）走第二十九条
+  //   选出「海立股份」（十日涨幅第 10 名 + 二次在列），但块内文案照抄了龙位口径 ⇒
+  //   被读成「龙位第 3 名被选、第 1/2 名被跳过」。文案必须与判定一致：
+  //   ⛔ 不许出现「按龙位从高到低依次取票」「并按它选股」，必须写「不按龙位取票」。
+  it('★ [CASE-1123-HAILI] 第二十九条通道的块内文案必须写「不按龙位取票」', function() {
+    const f = nov16();
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, {
+      range10Rows: NOV16_POOL,
+      range10Presence: presence(NOV16_CNT),
+      ebbCtx: ebbCtxOf()
+    });
+    const blk = plan.blocks[1];
+    const blkNotes = (blk.notes || []).join('\n');
+    const blkReason = String(blk.reason || '');
+    // ① 基础说明（reason / notes）不能再写龙位取票
+    expect(blkReason).not.toContain('按【龙一 → 龙二 → …】');
+    expect(blkNotes).not.toContain('按龙位从高到低依次取票');
+    // ② 必须点名第二十九条 + 明确「不按龙位」
+    expect(blkReason).toContain('第二十九条');
+    expect(blkReason).toContain('不按龙位取票');
+    expect(blkNotes).toContain('第二十九条 · 题材量比不达标');
+    expect(blkNotes).toContain('不按龙位取票');
+    // ③ 龙位说明里那句「并按它选股」同样不许出现（该通道根本不是按龙位选）
+    expect(blkNotes).not.toContain('并按它选股');
+  });
+
   // ═══════════════════════════════════════════════════════════════════════════
   // 9:26 竞价口径：名次按早上那一刻算（不是收盘）
   // ═══════════════════════════════════════════════════════════════════════════
@@ -3901,32 +4165,46 @@ describe('tvrb · 早盘 9:26 龙位 vs 收盘龙位 的差异说明（9-24 房�
     return map;
   }
 
-  const names = ['大亚圣象', '世联行', '我爱我家', '三峡新材', '华远控股', '绿地控股'];
+  // ★★ [YIZI-NO-SHIFT 2026-11-20] 本组夹具从 9-24 真实的 6 只扩到 10 只（big 档 ⇒ 取 2 只）：
+  //   一字【照选】之后 9-24 那只龙一 大亚圣象 自己就进买点了，而它在两个口径下都是【龙一】
+  //   ⇒ 单看它「两个口径完全一致」⇒ 按 §11 说明区一个字都不该写，漂移说明就没人验了。
+  //   扩到 big 档让【龙一 + 龙二】同时进买点：龙二 华远控股 9:26 是第 2、收盘掉到第 5
+  //   ⇒ 漂移真的发生 ⇒ `_appendDragonDriftNote` 的两个口径并列才有落脚点（口径本身一行未改）。
+  const names = ['大亚圣象', '世联行', '我爱我家', '三峡新材', '华远控股', '绿地控股',
+    '荣盛发展', '金科股份', '中南建设', '阳光城'];
   const b = block('房地产', 1, names.map(function(n) { return m(n, { aucVolRatio: 20 }); }));
-  // 龙一 大亚圣象 = 竞价一字（买不进 ⇒ 顺延）
+  // 龙一 大亚圣象 = 竞价一字（★ 现在【照选】+ 挂「等下杀买」，⛔ 不再顺延）
+  // ⚠️ 直接改 isYizi 时【必须同时】把竞价涨幅写成涨停幅度：标签判据读的是 aucPct（`m()` 的
+  //    isYizi 自动补只对构造时生效，事后赋值绕不过去 —— 这里踩过一次）。
   b.members[0].isYizi = true;
+  b.members[0].aucPct = 10;
 
   // 9:26 口径（早上那一刻）
   const buyDm = closeMap([
     ['大亚圣象', 1, 54.74], ['华远控股', 2, 35.21], ['我爱我家', 3, 32.08],
-    ['世联行', 4, 29.29], ['三峡新材', 5, 20.00], ['绿地控股', 6, 13.64]
+    ['世联行', 4, 29.29], ['三峡新材', 5, 20.00], ['绿地控股', 6, 13.64],
+    ['荣盛发展', 7, 11.00], ['金科股份', 8, 9.00], ['中南建设', 9, 7.00], ['阳光城', 10, 5.00]
   ]);
   // 收盘口径（15:00 后 T 腿被换成收盘涨幅 ⇒ 组内重排）
   const closeDm = closeMap([
     ['大亚圣象', 1, 41.00], ['世联行', 2, 36.40], ['我爱我家', 3, 24.91],
-    ['三峡新材', 4, 21.93], ['华远控股', 5, 20.18], ['绿地控股', 6, 8.33]
+    ['三峡新材', 4, 21.93], ['华远控股', 5, 20.18], ['绿地控股', 6, 8.33],
+    ['荣盛发展', 7, 7.00], ['金科股份', 8, 5.00], ['中南建设', 9, 3.00], ['阳光城', 10, 1.00]
   ]);
 
   const plan = buildTopicVolRatioPlan([b], closeDm, { buyDragonMap: buyDm, pctMap: buyDm });
 
-  it('选股按【早上 9:26 龙位】：龙一一字顺延 ⇒ 取龙二 华远控股（不是收盘龙二 世联行）', function() {
+  it('选股按【早上 9:26 龙位】：龙一竞价一字 ⇒ 【照选 + 打标签】，⛔ 不再顺延到龙二', function() {
     const blk = plan.blocks[0];
-    expect(blk.tier).toBe('mid');
-    expect(blk.pickCount).toBe(1);
-    expect(blk.picks.map(function(p) { return p.name; })).toEqual(['华远控股']);
+    expect(blk.tier).toBe('big');
+    expect(blk.pickCount).toBe(2);
+    // ★ [YIZI-NO-SHIFT 2026-11-20] 旧口径「龙一一字买不进 ⇒ 顺延取龙二 华远控股、世联行」已废除：
+    //   一字照选占一档 ⇒ 取到的就是【龙一 大亚圣象 + 龙二 华远控股】。
+    expect(blk.picks.map(function(p) { return p.name; })).toEqual(['大亚圣象', '华远控股']);
     // 行上的龙标 / 十日涨幅也必须是 9:26 那一个（§6：龙标与选股同一口径）
-    expect(blk.picks[0].dragonLabel).toBe('龙二');
-    expect(blk.picks[0].pct).toBe(35.21);
+    expect(blk.picks.map(function(p) { return p.dragonLabel; })).toEqual(['龙一', '龙二']);
+    expect(blk.picks[0].pct).toBe(54.74);
+    expect(blk.picks[0].auctionYiziTag).toBe(AUCTION_YIZI_WAIT_TAG);
   });
 
   // ★★ [TVRB-926-FACT 2026-10-24 用户口径] 说明区只写【口径时间 + 涨幅 + 第几名】，⛔ 不解释。
@@ -3934,12 +4212,12 @@ describe('tvrb · 早盘 9:26 龙位 vs 收盘龙位 的差异说明（9-24 房�
   //   在上面说明时间他们的涨幅是多少排名第几就行了」。
   it('说明区只摆事实：两个口径的【涨幅 + 第几名】并列，且不写原因', function() {
     const txt = plan.blocks[0].notes.join('\n');
-    // ① 9:26 竞价口径：被选中的那只，带涨幅 + 名次
+    // ① 9:26 竞价口径：被选中的两只，带涨幅 + 名次
     expect(txt).toContain('〔9:26 竞价口径〕');
+    expect(txt).toContain('大亚圣象 +54.74% 第 1 名（选入）');
     expect(txt).toContain('华远控股 +35.21% 第 2 名（选入）');
-    // ② 收盘口径：同样带涨幅 + 名次（用户会追问的世联行在这里）
+    // ② 收盘口径：华远控股 从第 2 掉到第 5 —— 这正是用户复盘时会追问的那处差异
     expect(txt).toContain('〔收盘口径〕');
-    expect(txt).toContain('世联行 +36.40% 第 2 名');
     expect(txt).toContain('华远控股 +20.18% 第 5 名');
     // ③ ⛔ 不许解释（上一版被用户否掉的那几段：根因 / 第二十三条 / 「没有选错票」/「不是按量比」）
     expect(txt).not.toContain('第二十三');
@@ -4282,18 +4560,22 @@ describe('tvrb · [SMALL-TOPIC] 排名第一题材数量 4~6 只：只买当天�
     expect(txt).toContain('小题材收紧 · 本题材不入选');
   });
 
-  it('★ 龙一竞价一字（买不进）且前十只剩它一只 ⇒ 实际 0 只，⛔ 不从第十名之外补位', function() {
+  it('★ 龙一竞价一字且前十只剩它一只 ⇒ 【照选这一只】（= 用户 11-20 盛剑科技场景），⛔ 仍不从第十名之外补位', function() {
     const f = topicsOf(4);
     // 龙一 45 ⇒ 第 10 名（前十最后一位）；龙二/三/四 -5/-6/-7 ⇒ 第 15~17 名（前十之外）
     const pool = poolOf(f.t1.names, [45, -5, -6, -7], 9);
     f.topics[0].members[0].isYizi = true;                    // 龙一 = 竞价一字
+    f.topics[0].members[0].aucPct = 10;                      // 同源：一字 ⇔ 竞价涨幅到涨停幅度
     const plan = buildTopicVolRatioPlan(f.topics, f.dm, { range10Rows: pool });
     expect(plan.blocks).toHaveLength(2);
-    expect(plan.blocks[0].picks).toHaveLength(0);
+    // ★★ [YIZI-NO-SHIFT 2026-11-20] 这条就是用户 11-20 报障的原型：
+    //   「6 只、排名第一、龙一 盛剑科技 竞价涨停（买不进）⇒ 已顺延到下一个龙位（兴欣新材）」，
+    //   用户明确「正确的选股应该是盛剑科技」。旧口径在这里给【实际 0 只 / 顺延龙二】，已废除。
+    //   ⇒ 一字【照选】+ 挂标签，且【仍在「前十以内」这个约束里】：龙二不在前十，照样不许顶上来。
+    expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual([FIRST + '1']);
+    expect(plan.blocks[0].picks[0].auctionYiziTag).toBe(AUCTION_YIZI_WAIT_TAG);
+    expect(plan.buyNames.has(FIRST + '1')).toBe(true);
     expect(plan.buyNames.has(FIRST + '2')).toBe(false);      // 龙二不在前十 ⇒ 不许顶上来
-    const notes = plan.blocks[0].notes.join('\n');
-    expect(notes).toContain('实际 0 只');
-    expect(notes).toContain('不从前十之外补位');
   });
 
   it('§11：调用方没传十日涨幅池 ⇒ 整段跳过（行为与加规则之前逐字节相同）', function() {
@@ -4994,8 +5276,11 @@ describe('tvrb · 第三十条【弱势切抱团】', function() {
     plan.blocks.forEach(function(b) { (b.picks || []).forEach(function(p) { grayNames.push(p.name); }); });
     // 大业股份是灰块的龙一 ⇒ 一定在灰块里出现过
     expect(grayNames).toContain('大业股份');
-    // ⇒ 去重后仍 = 灰块只数（抱团那只不额外加一）
-    expect(plan.pickCount).toBe(Array.from(new Set(grayNames)).length);
+    // ★★ [BUYABLE-COUNT 2026-11-19 用户口径] 旧断言 = 「去重后仍等于灰块只数」（数行数）。
+    //   新口径：灰块那一整批挂着【分歧日不买】⇒ 一只都不计入；能下单的只有抱团那只 ⇒ 1。
+    expect(grayNames.length).toBeGreaterThan(0);        // 灰块确实照常列出（用户「不用去掉」）
+    expect(plan.pickCount).toBe(1);
+    expect(plan.weakHuddle.picks.map(function(p) { return p.name; })).toHaveLength(1);
   });
 
   it('规则手册：第三十条必须写清「触发时机 / 从市场龙头选 / 前三 / 没有就还是空仓 / 放最前面」', function() {
@@ -5337,7 +5622,10 @@ describe('tvrb · 第三十一条【补涨题材】', function() {
     const grayNames = [];
     plan.blocks.forEach(function(b) { (b.picks || []).forEach(function(p) { grayNames.push(p.name); }); });
     expect(grayNames).toContain('大业股份');          // 补涨那只一定在灰块里出现过
-    expect(plan.pickCount).toBe(Array.from(new Set(grayNames)).length);
+    // ★★ [BUYABLE-COUNT 2026-11-19 用户口径] 灰块挂着【分歧日不买】⇒ 不计入；
+    //   能下单的只有补涨那一只 ⇒ 1（旧断言数的是「去重后的灰块只数」= 数行数）。
+    expect(plan.pickCount).toBe(1);
+    expect(plan.catchUp.picks.map(function(p) { return p.name; })).toHaveLength(1);
   });
 
   it('规则手册：第三十一条必须写清「从 6~10 名挑 / 恰好 2~3 只 / 只选连板票 / 没有就连板都没有就空仓」', function() {
@@ -5546,5 +5834,290 @@ describe('tvrb · 第三十二条【题材龙一竞价跌停 ⇒ 弱势切抱团
     expect(all).toContain('11-02');
     expect(all).toContain('海洋王');
     expect(all).toContain('九阳股份');
+  });
+});
+
+// ── ★★ [EBB-TOPIC-MEMBER 2026-11-27 用户口径] 二次确认退潮 ⇒ 退潮题材【题材字段级】排除 ─────────
+//
+// 用户原话（11-16 实证）：「二次确认退潮了，你看退潮的是哪个题材，那个题材中包含哪些题材字段，
+//   有包含这些题材字段的股票当天都不能选进题材量比选股买点侧……比如它原来完整题材窜就是
+//   (家电,热泵,东方)，虽然选消费题材没错，它也属于消费，但它含有东方，所以也是属于退潮题材，
+//   所以是不能选的……比如选北纬科技是正确的，因为题材窜那里没有东方，它完整的是(游戏,通信)。」
+// 数量口径原话：「你要看题材数量，比如数量不足4（排除那只后），就不选，如果数量符合要求，
+//   可以顺延，就是排除那只后，按照常规数量层级选出来。规则范围像你说的二次确认退潮日，其它不变。」
+describe('tvrb · [EBB-TOPIC-MEMBER] 二次确认退潮 ⇒ 退潮题材字段级排除 + 剔除后数量取档', function() {
+  // 真实库题材串（2026-11-27 取证）：日出东方 = 家电,热泵,东方；北纬科技 = 游戏,通信
+  const TOPICS = {
+    '日出东方': '家电,热泵,东方',
+    '九阳股份': '家电',
+    '家三': '家电',
+    '家四': '家电',
+    '家五': '家电',
+    '北纬科技': '游戏,通信',
+    '甲一': 'AI应用', '甲二': 'AI应用', '甲三': 'AI应用', '甲四': 'AI应用',
+    '甲五': 'AI应用', '甲六': 'AI应用', '甲七': 'AI应用', '甲八': 'AI应用'
+  };
+  function topicsOf(name) { return TOPICS[String(name || '').trim()] || ''; }
+  function ebbCtx() {
+    return {
+      ready: true,
+      leader: { name: '东方海洋', pct: 130, topic: '东方', code: '002086', rank: 1, isYizi: false },
+      leaderSuspended: false,
+      leaderShare: 3.3,          // ＜ 龙头门槛 3.5% ⇒ 判据②（占比不达标）
+      siblingDragons: [],
+      secondInfo: null,
+      prevLeader: null,
+      buyPicks: [],
+      buyTrail: []
+    };
+  }
+  /** 近 10 天已有一次「东方」退潮事件 ⇒ 今天 = 二次确认 */
+  const HIST = [{ date: '2026-11-13', prevDate: '2026-11-12', leaderStock: '东方海洋', leaderTopic: '东方', ebb: true }];
+  function bigTopic(members) {
+    return block('大消费', 1, members.map(function(n, i) {
+      return m(n, { aucVolRatio: 60 - i, aucShare: 6, code: '6000' + (i + 1) });
+    }));
+  }
+  function aiTopic() {
+    return block('AI应用', 2, ['北纬科技', '甲一', '甲二', '甲三', '甲四', '甲五', '甲六', '甲七', '甲八']
+      .map(function(n, i) { return m(n, { aucVolRatio: 50 - i, aucShare: 6, code: '6010' + (i + 1) }); }));
+  }
+
+  it('★ 11-16 形：大消费照常入选并选出日出东方，但该块灰化 + 标签【题材退潮不选】+ 写明原因', function() {
+    // 大消费 4 只（含 日出东方）⇒ 题材数量 / 档位 / 选出哪只票 全按原规则（⛔ 不重算、不顺延）
+    const dm = dragonMap([['日出东方', 1], ['九阳股份', 2], ['北纬科技', 1], ['甲一', 2]]);
+    const p = buildTopicVolRatioPlan([bigTopic(['日出东方', '九阳股份', '家三', '家四']), aiTopic()], dm, {
+      ebbCtx: ebbCtx(), ebbHistory: HIST, stockTopicsOf: topicsOf
+    });
+    expect(p.ebb.phase).toBe('second');
+    expect(p.ebb.leaderTopic).toBe('东方');
+    // 题材照常入选（大消费仍在 blocks 里，数量口径不变）
+    expect(p.blocks.map(function(b) { return b.topic; })).toEqual(['大消费', 'AI应用']);
+    expect(p.excludedTopics).toEqual([]);
+    const big = p.blocks[0];
+    expect(big.count).toBe(4);
+    // 照原规则选出日出东方（不是换票、不是顺延）
+    expect(big.picks.map(function(x) { return x.name; })).toEqual(['日出东方']);
+    const pick = big.picks[0];
+    // 灰块 + 区别标签 + 行内原因
+    expect(!!big.ebbTopicGray).toBe(false);   // ⛔ 块不灰，只灰行
+    expect(pick.buyActionTag).toBe(EBB_TOPIC_BAN_TAG);
+    expect(pick.ebbTopicBlocked).toBe(true);
+    expect(pick.actionNote).toContain('家电,热泵,东方');
+    expect(pick.actionNote).toContain('【东方】');
+    expect(pick.actionNote).toContain('本题材本身是符合常规选股条件的');
+    // 今天不能下单 ⇒ 不计入买点名单；北纬科技照原规则选入
+    expect(p.buyNames.has('日出东方')).toBe(false);
+    expect(p.buyNames.has('北纬科技')).toBe(true);
+    // AI应用 9 只 ⇒ big 档取 2 只，两只都能买 ⇒ 可买只数 = 2（大消费那只不计入）
+    expect(p.pickCount).toBe(2);
+    // 说明必须写清「题材数量/档位不变，只是这只票命中」
+    const all = p.notes.join('\n');
+    expect(all).toContain('常规选股结论【不变】');
+    expect(all).toContain('题材退潮不选');
+  });
+
+  it('★ 选出的票题材串不含退潮字段 ⇒ 块不灰、照常买（北纬科技那种）', function() {
+    const dm = dragonMap([['北纬科技', 1], ['甲一', 2]]);
+    const p = buildTopicVolRatioPlan([aiTopic()], dm, {
+      ebbCtx: ebbCtx(), ebbHistory: HIST, stockTopicsOf: topicsOf
+    });
+    expect(p.blocks[0].picks.map(function(x) { return x.name; })).toContain('北纬科技');
+    expect(!!p.blocks[0].ebbTopicGray).toBe(false);
+    expect(p.buyNames.has('北纬科技')).toBe(true);
+    expect(p.blocks[0].picks[0].buyActionTag).not.toBe(EBB_TOPIC_BAN_TAG);
+  });
+
+  it('★ 范围只限二次确认退潮日：普通日照旧（含「东方」字段的票照选、不灰）', function() {
+    const dm = dragonMap([['日出东方', 1], ['九阳股份', 2]]);
+    const p = buildTopicVolRatioPlan([bigTopic(['日出东方', '九阳股份', '家三', '家四'])], dm, {
+      ebbCtx: { ready: false, leader: null }, stockTopicsOf: topicsOf
+    });
+    expect(p.blocks[0].topic).toBe('大消费');
+    expect(p.blocks[0].picks.map(function(x) { return x.name; })).toEqual(['日出东方']);
+    expect(p.buyNames.has('日出东方')).toBe(true);
+    expect(!!p.blocks[0].ebbTopicGray).toBe(false);
+  });
+});
+
+describe('tvrb · makeEbbTopicBan 票级认亲（§6 纯函数）', function() {
+  const TOPICS = { '日出东方': '家电,热泵,东方', '北纬科技': '游戏,通信', '九阳股份': '家电' };
+  const topicsOf = function(n) { return TOPICS[n] || ''; };
+
+  it('题材串任一段命中退潮题材 ⇒ 命中（并给出命中的那一段与原始串）', function() {
+    const ban = makeEbbTopicBan(['东方'], topicsOf, null);
+    expect(ban).not.toBe(null);
+    expect(ban.test('日出东方')).toBe(true);
+    expect(ban.segmentOf('日出东方')).toBe('东方');
+    expect(ban.rawTopicsOf('日出东方')).toBe('家电,热泵,东方');
+    expect(ban.test('北纬科技')).toBe(false);
+  });
+
+  it('§10 判不出 ⇒ 返回 null（⛔ 不替用户排除股票）', function() {
+    expect(makeEbbTopicBan([], topicsOf, null)).toBe(null);
+    expect(makeEbbTopicBan([''], topicsOf, null)).toBe(null);
+    expect(makeEbbTopicBan(['东方'], null, null)).toBe(null);
+    // 注入了解析但该票没有题材串 ⇒ 不命中
+    const ban = makeEbbTopicBan(['东方'], topicsOf, null);
+    expect(ban.test('不存在的票')).toBe(false);
+  });
+
+  it('大类归一后认亲（家电 ⇒ 大消费 与退潮题材「大消费」同一把尺子）', function() {
+    const res = makeCoreTopicResolver([{ name: '大消费', synonyms: ['家电'] }]);
+    const ban = makeEbbTopicBan(['大消费'], topicsOf, res);
+    expect(ban.test('九阳股份')).toBe(true);          // 题材串 = 家电 ⇒ 归一成 大消费
+    expect(ban.test('日出东方')).toBe(true);          // 家电,热泵,东方 里也有 家电
+    expect(ban.test('北纬科技')).toBe(false);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [EBB-TOPIC-TEMP 2026-11-27 用户口径] 二次确认退潮的【禁买词集合】取材：
+//   总龙原有题材（经核心词归一大类，同义词一并牵连）∪ 当日生效且【总龙自己也沾】的临时题材词。
+//   11-16 真库形状：`leader_topic = 水产品`（归一 = 农业）；临时词「东方」11-12~11-16 生效；
+//   「羊字辈」11-18 才建 ⇒ 11-16 不该牵连。
+// ══════════════════════════════════════════════════════════════════════════════════════
+describe('tvrb · [EBB-TOPIC-TEMP] 退潮禁买集合 = 原有题材 + 临时题材牵连', function() {
+  // 真实库题材串（2026-11-27 取证）
+  const TOPICS = {
+    '东方海洋': '水产品,农业,东方,羊字辈',
+    '日出东方': '家电,热泵,东方',
+    '百洋股份': '水产品',
+    '九阳股份': '家电',
+    '家三': '家电',
+    '家四': '家电',
+    '北纬科技': '游戏,通信',
+    '甲一': 'AI应用', '甲二': 'AI应用', '甲三': 'AI应用', '甲四': 'AI应用',
+    '甲五': 'AI应用', '甲六': 'AI应用', '甲七': 'AI应用', '甲八': 'AI应用'
+  };
+  function topicsOf(name) { return TOPICS[String(name === null || name === undefined ? '' : name).trim()] || ''; }
+  // 用户口径「要牵连到大类的」：水产品 是 农业 的同义词 ⇒ 归一后同一把尺子
+  const CORE = [{ name: '农业', synonyms: ['水产品'] }, { name: '大消费', synonyms: ['家电'] }];
+  function ebbCtx() {
+    return {
+      ready: true,
+      leader: { name: '东方海洋', pct: 130, topic: '水产品', code: '002086', rank: 1, isYizi: false },
+      leaderSuspended: false,
+      leaderShare: 3.3,          // ＜ 龙头门槛 3.5% ⇒ 判据②（占比不达标）
+      siblingDragons: [],
+      secondInfo: null,
+      prevLeader: null,
+      buyPicks: [],
+      buyTrail: []
+    };
+  }
+  /** 近 10 天已有一次「农业（水产品）」退潮事件 ⇒ 今天 = 二次确认 */
+  const HIST = [{ date: '2026-11-10', prevDate: '2026-11-09', leaderStock: '东方海洋', leaderTopic: '农业', ebb: true }];
+  function bigTopic(members) {
+    return block('大消费', 1, members.map(function(n, i) {
+      return m(n, { aucVolRatio: 60 - i, aucShare: 6, code: '6000' + (i + 1) });
+    }));
+  }
+  function aiTopic() {
+    return block('AI应用', 2, ['北纬科技', '甲一', '甲二', '甲三', '甲四', '甲五', '甲六', '甲七', '甲八']
+      .map(function(n, i) { return m(n, { aucVolRatio: 50 - i, aucShare: 6, code: '6010' + (i + 1) }); }));
+  }
+
+  it('★ 11-16：原有题材「水产品(→农业)」+ 临时题材「东方」⇒ 日出东方灰化、北纬科技照买', function() {
+    const dm = dragonMap([['日出东方', 1], ['九阳股份', 2], ['北纬科技', 1], ['甲一', 2]]);
+    const p = buildTopicVolRatioPlan([bigTopic(['日出东方', '九阳股份', '家三', '家四']), aiTopic()], dm, {
+      ebbCtx: ebbCtx(), ebbHistory: HIST, stockTopicsOf: topicsOf, coreTopics: CORE,
+      tempTopicTokens: ['东方']            // 11-16 生效中的临时词（羊字辈 11-18 才建，不在此列）
+    });
+    expect(p.ebb.phase).toBe('second');
+    // 常规选股结论一个字都不改：大消费仍入选、仍选日出东方
+    expect(p.blocks.map(function(b) { return b.topic; })).toEqual(['大消费', 'AI应用']);
+    const big = p.blocks[0];
+    expect(big.count).toBe(4);
+    expect(big.picks.map(function(x) { return x.name; })).toEqual(['日出东方']);
+    // 票级命中「东方」（临时题材牵连）⇒ 灰块 + 标签
+    expect(!!big.ebbTopicGray).toBe(false);   // ⛔ 块不灰，只灰行
+    const pick = big.picks[0];
+    expect(pick.buyActionTag).toBe(EBB_TOPIC_BAN_TAG);
+    expect(pick.ebbTopicBlocked).toBe(true);
+    expect(pick.actionNote).toContain('家电,热泵,东方');
+    expect(pick.actionNote).toContain('临时题材');   // 必须说明「东方」是被临时题材牵连进来的
+    expect(p.buyNames.has('日出东方')).toBe(false);
+    expect(p.buyNames.has('北纬科技')).toBe(true);
+    // 提示板必须点名两个来源，且题材说【大类】（水产品 ⇒ 农业，用户「提就要提核心词」）
+    const all = p.notes.join('\n');
+    expect(all).toContain('退潮题材【农业、东方】');
+    expect(all).toContain('临时题材【东方】');
+  });
+
+  it('★ 临时词不生效（羊字辈 11-18 才建 / 已过期）⇒ 不牵连：同样那批票不灰', function() {
+    const dm = dragonMap([['日出东方', 1], ['九阳股份', 2]]);
+    const p = buildTopicVolRatioPlan([bigTopic(['日出东方', '九阳股份', '家三', '家四'])], dm, {
+      ebbCtx: ebbCtx(), ebbHistory: HIST, stockTopicsOf: topicsOf, coreTopics: CORE,
+      tempTopicTokens: []                    // 当天没有任何生效的临时词
+    });
+    expect(p.ebb.phase).toBe('second');
+    expect(!!p.blocks[0].ebbTopicGray).toBe(false);
+    expect(p.blocks[0].picks[0].buyActionTag).not.toBe(EBB_TOPIC_BAN_TAG);
+    expect(p.buyNames.has('日出东方')).toBe(true);
+  });
+
+  it('★ 大类牵连：同义词「水产品」也要灰（用户：核心词农业包含的同义词都灰掉）', function() {
+    const dm = dragonMap([['百洋股份', 1], ['九阳股份', 2]]);
+    const p = buildTopicVolRatioPlan([bigTopic(['百洋股份', '九阳股份', '家三', '家四'])], dm, {
+      ebbCtx: ebbCtx(), ebbHistory: HIST, stockTopicsOf: topicsOf, coreTopics: CORE
+    });
+    const big = p.blocks[0];
+    expect(big.picks.map(function(x) { return x.name; })).toEqual(['百洋股份']);
+    expect(!!big.ebbTopicGray).toBe(false);   // ⛔ 块不灰，只灰行
+    expect(big.picks[0].buyActionTag).toBe(EBB_TOPIC_BAN_TAG);
+    expect(p.buyNames.has('百洋股份')).toBe(false);
+  });
+
+  it('★ ebbBanTopicsOf 取词：只收「总龙自己也沾」的临时词（§10 不牵连）', function() {
+    const res = makeCoreTopicResolver(CORE);
+    const a = ebbBanTopicsOf('水产品', '水产品,农业,东方,羊字辈', ['东方'], res);
+    expect(a.topics).toEqual(['水产品', '东方']);
+    expect(a.tempTopics).toEqual(['东方']);
+    // 总龙不沾 ⇒ 不进集合
+    const b = ebbBanTopicsOf('水产品', '水产品,农业', ['东方', '羊字辈'], res);
+    expect(b.topics).toEqual(['水产品']);
+    expect(b.tempTopics).toEqual([]);
+    // 判不出（没有总龙题材串 / 没有临时词）⇒ 只按原有题材，⛔ 不炸、不乱杀
+    expect(ebbBanTopicsOf('水产品', '', ['东方'], res).topics).toEqual(['水产品']);
+    expect(ebbBanTopicsOf('水产品', '水产品,东方', null, res).tempTopics).toEqual([]);
+    // 原有题材为空 ⇒ 只剩临时题材牵连
+    expect(ebbBanTopicsOf('', '水产品,东方', ['东方'], res).topics).toEqual(['东方']);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [LEADER-TIMELINE 2026-11-27 用户口径] 第二十八条说明上方的「总龙一事件轴」小表（纯函数）。
+//   顺序 = 时间顺序：首次分歧 → 首次退潮 → 二次确认退潮 → 切换日；没有三次退潮。
+// ══════════════════════════════════════════════════════════════════════════════════════
+describe('tvrb · buildLeaderEventTimeline 事件轴（§6 纯函数）', function() {
+  const SD = { leaderName: '东方海洋', oldTopic: '羊字辈', ebbTopic: '水产品', ebbDate: '2026-11-16' };
+  const HIST = [
+    { date: '2026-11-04', leaderStock: '东方海洋', leaderTopic: '农业', ebb: false },
+    { date: '2026-11-10', leaderStock: '东方海洋', leaderTopic: '农业', ebb: true },
+    { date: '2026-11-16', leaderStock: '东方海洋', leaderTopic: '水产品', ebb: true }
+  ];
+
+  it('★ 11-18 形状：一行讲完 首次分歧 → 首次退潮 → 二次确认退潮 → 切换日 + 无三次退潮', function() {
+    const t = buildLeaderEventTimeline(SD, HIST, { stock: '东方海洋', firstDate: '2026-11-04' }, '2026-11-18');
+    expect(t).toBe('〔事件轴〕东方海洋 题材=羊字辈（退潮登记=水产品）：首次分歧 11-04 → 首次退潮 11-10 → ' +
+      '二次确认退潮 11-16 → 切换日 11-18〔本题〕｜无三次退潮（第二十七条：第三次以上不判）');
+    expect(t.indexOf('\n')).toBe(-1);
+  });
+
+  it('★ 分歧事实不属于本龙 / 找不到首次退潮 ⇒ 占位「—」，⛔ 不拿别的票的数据拼进来', function() {
+    const t = buildLeaderEventTimeline(
+      { leaderName: '文投控股', oldTopic: 'AI应用', ebbTopic: 'AI应用', ebbDate: '2026-11-17' },
+      [{ date: '2026-11-17', leaderStock: '文投控股', leaderTopic: 'AI应用', ebb: true }],
+      { stock: '华东重机', firstDate: '2026-11-05' }, '2026-11-19');
+    expect(t).toContain('首次分歧 —');
+    expect(t).toContain('首次退潮 —');
+    expect(t).toContain('二次确认退潮 11-17');
+    expect(t).not.toContain('华东重机');
+  });
+
+  it('★ 没有切换日 / 没有老龙一 ⇒ 空串（这一天不写事件轴，§11）', function() {
+    expect(buildLeaderEventTimeline(null, HIST, null, '2026-11-18')).toBe('');
+    expect(buildLeaderEventTimeline({ oldTopic: '羊字辈' }, HIST, null, '2026-11-18')).toBe('');
   });
 });

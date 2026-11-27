@@ -60,25 +60,9 @@
             {{ saving ? '保存中…' : '添加' }}
           </button>
         </div>
-        <!-- [TEMP-CORE 2026-11-17] 临时题材：只归类、不强制禁选；生效 = 设置日起 3 个交易日 -->
-        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px;">
-          <label style="font-size: 12px; color: #7c3aed; cursor: pointer;">
-            <input
-              v-model="isTempTopic"
-              type="checkbox"
-              style="vertical-align: middle; margin-right: 4px;"
-            >临时题材（仅生效 3 个交易日）
-          </label>
-          <template v-if="isTempTopic">
-            <span style="font-size: 12px; color: #6b7280;">设置日</span>
-            <input
-              v-model="tempStartDate"
-              type="date"
-              style="padding: 5px 8px; font-size: 12px; border: 1px solid #e2e8f0; border-radius: 4px;"
-            >
-            <span style="font-size: 12px; color: #854f0b;">至 {{ tempEndDateText }}</span>
-          </template>
-        </div>
+        <!-- [TEMP-CORE-SEP 2026-11-27] 临时题材已拆成独立组件（TempCoreTopicsPanel.vue）：
+             它与主流核心词是两张表、两套语义，混在这里改一处容易碰到另一处。
+             ⛔ 主流核心词的添加 / 编辑 / 删除逻辑一行未改动。 -->
         <!-- §10：校验失败内联提示，替代原生 alert（不阻塞、不打断输入） -->
         <div
           v-if="formError"
@@ -87,6 +71,12 @@
           {{ formError }}
         </div>
       </div>
+      <!-- [TEMP-CORE-VISIBLE 2026-11-26 用户口径] 临时题材区块【上移 + 过期灰显常驻】：
+           ① 原来它排在「核心词列表」下方，而 .modal-content 有 300px 底部内边距 ⇒
+              核心词一多就要滚很久才看得到，用户会误判「临时题材没保存 / 消失了」；
+           ② 过期 / 关停的行以前没有任何视觉区分 ⇒ 现在灰显 + 状态标签，且常驻不消失，
+              复盘时能核对「那天到底有没有设过这个词」。 -->
+      <TempCoreTopicsPanel ref="tempPanelRef" />
       <div style="max-height: 400px; overflow-y: auto;">
         <div
           v-if="coreTopics.length === 0"
@@ -123,49 +113,6 @@
           >
             删除
           </button>
-        </div>
-      </div>
-      <!-- [TEMP-CORE 2026-11-17] 临时题材清单：生效期内参与归类，过期自动换回主流题材 -->
-      <div
-        v-if="tempTopics.length > 0"
-        style="margin-top: 16px; padding-top: 12px; border-top: 1px dashed #e2e8f0;"
-      >
-        <div style="font-size: 12px; color: #6b7280; margin-bottom: 8px;">
-          临时题材（生效期按这些词归类，过期／关停后自动用主流题材）
-        </div>
-        <div
-          v-for="t in tempTopics"
-          :key="t.id"
-          style="padding: 10px; border: 1px solid #fde68a; border-radius: 6px; margin-bottom: 8px; background: #fffbeb;"
-        >
-          <div style="font-weight: 600; color: #78350f; font-size: 13px;">
-            {{ t.name }}
-            <span
-              v-if="isTempStopped(t)"
-              style="font-size: 11px; color: #b91c1c; margin-left: 6px;"
-            >已关停</span>
-          </div>
-          <div style="font-size: 12px; color: #92400e; margin-top: 3px;">
-            同义词：{{ t.synonyms.length > 0 ? t.synonyms.join('、') : '无' }}
-          </div>
-          <div style="font-size: 12px; color: #92400e; margin-top: 3px;">
-            生效：{{ t.startDate }} ~ {{ tempEndDateOf(t) }}
-            <span v-if="t.disabledFrom">（{{ t.disabledFrom }} 起关停）</span>
-          </div>
-          <div style="margin-top: 7px; display: flex; gap: 6px;">
-            <button
-              type="button"
-              :disabled="saving"
-              style="padding: 4px 8px; font-size: 12px; border: none; border-radius: 4px; cursor: pointer; background: #fee2e2; color: #dc2626;"
-              @click="toggleTemp(t)"
-            >{{ isTempStopped(t) ? '恢复' : '关停' }}</button>
-            <button
-              type="button"
-              :disabled="saving"
-              style="padding: 4px 8px; font-size: 12px; border: none; border-radius: 4px; cursor: pointer; background: #f1f5f9; color: #475569;"
-              @click="removeTemp(t)"
-            >删除</button>
-          </div>
         </div>
       </div>
       <!-- ⚠️ 2026-09-20 移除【恢复默认】按钮：题材分类已整理完毕，该按钮会用默认词库整份覆盖
@@ -282,7 +229,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue';
+import { ref } from 'vue';
 // [TOPIC-SEP 2026-10-02] splitTopicWords = 题材词拆分的【唯一实现】（§6 单一真相），
 //   本组件的 synonyms 输入必须与股票侧标签用同一套分隔符（含顿号），⛔ 不许再自己写正则。
 import { getCoreTopics, saveCoreTopics, splitTopicWords } from '../logic/topic/rules.js';
@@ -297,13 +244,9 @@ import { previewCoreWordPurge, purgeCoreWordFromLibrary } from '../logic/topic/c
 //    在云端读不到核心词时的兜底默认词库，删了会让所有看板的题材分类直接失效。
 import { _emit } from '../stores/eventBus.js';
 import { showToast, showWarningToast } from '../composables/useToast.js';
-import { useUiStore } from '../stores/uiStore.js';
-// [TEMP-CORE 2026-11-17] 临时题材：UI 不直连 Supabase（架构 §3），全部走 Data 层具名函数
-import {
-  getTempCoreTopics, upsertTempCoreTopic, setTempCoreTopicDisabled, deleteTempCoreTopic
-} from '../data/temp-core-topics.js';
-import { endDateOf } from '../logic/topic/temp-core-topic.js';
-import { getNextTradingDay } from '../logic/date/trading-day-helpers.js';
+// [TEMP-CORE-SEP 2026-11-27] 临时题材已拆成独立组件（两张表、两套语义，互不改写）：
+//   组件内部自己走 data/temp-core-topics.js，主弹窗只留一个 ref。
+import TempCoreTopicsPanel from './TempCoreTopicsPanel.vue';
 
 const visible = ref(false);
 const coreTopics = ref([]);
@@ -320,26 +263,20 @@ const editName = ref('');
 const editSynonyms = ref('');
 const confirmState = ref({ visible: false, title: '', desc: '', okText: '确定', onOk: null });
 
-const uiStore = useUiStore();
-// [TEMP-CORE] 临时题材表单态：默认按当前展示的交易日作为设置日（可改成过去的日期 ⇒ 历史补录）
-const isTempTopic = ref(false);
-const tempStartDate = ref('');
-const tempTopics = ref([]);
-const tempEndDateText = computed(function() {
-  const e = endDateOf(tempStartDate.value, 3, getNextTradingDay);
-  return e || '—';
-});
+// [TEMP-CORE-SEP 2026-11-27] 临时题材的状态 / 读写 / 关停 / 删除全在独立组件内，
+// 主弹窗只持有 ref（打开时强制重读一次）⇒ 不会出现两份数据各自漂移（§6 单一真相）。
+const tempPanelRef = ref(null);
+
 
 function refreshList() {
   coreTopics.value = getCoreTopics();
-  tempTopics.value = getTempCoreTopics().slice();
 }
 function open() {
   refreshList();
   formError.value = '';
-  isTempTopic.value = false;
-  tempStartDate.value = String(uiStore.currentDate || '').trim();
   visible.value = true;
+  // 用户主动打开 = 必须真的去读一次临时题材（面板内部用 refresh，绕开失败冷却；失败可见 §10）
+  if (tempPanelRef.value) tempPanelRef.value.refresh();
 }
 function close() {
   visible.value = false;
@@ -395,29 +332,6 @@ async function addCoreTopic() {
   if (!name) { formError.value = '请输入核心词名称'; return; }
   const syns = splitSynonyms(newSynonyms.value);
 
-  // ★★ [TEMP-CORE] 临时题材单独写 core_topic_temp：⛔ 绝不写 core_topics（那张表是主流词库，
-  //   它的 saveCoreTopics 按 name 差集删除 + 全量 upsert，混进去会把用户的正式配置覆盖掉）。
-  if (isTempTopic.value) {
-    const sd = String(tempStartDate.value || '').trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(sd)) { formError.value = '请选择临时题材的设置日'; return; }
-    formError.value = '';
-    saving.value = true;
-    try {
-      await upsertTempCoreTopic({ name: name, synonyms: syns, startDate: sd });
-      refreshList();
-      showToast('✅ 已添加临时题材「' + name + '」：' + sd + ' 起 3 个交易日有效');
-      newName.value = '';
-      newSynonyms.value = '';
-      isTempTopic.value = false;
-      _emit('auction-refresh');
-    } catch (e) {
-      console.error('[TEMP-CORE] 保存失败:', e);
-      showWarningToast('❌ 临时题材保存失败：' + (e && e.message ? e.message : '未知错误'), 8000);
-    } finally {
-      saving.value = false;
-    }
-    return;
-  }
 
   if (coreTopics.value.find(c => c.name === name)) { formError.value = '该核心词已存在'; return; }
   formError.value = '';
@@ -441,78 +355,6 @@ function closeEdit() {
   editIndex.value = null;
 }
 
-// ===== [TEMP-CORE] 临时题材的关停 / 恢复 / 删除（§10：每一步都有可见结果） =====
-function tempEndDateOf(t) {
-  return endDateOf(t.startDate, 3, getNextTradingDay) || '—';
-}
-function isTempStopped(t) {
-  return !!t.disabledFrom;
-}
-async function toggleTemp(t) {
-  const off = isTempStopped(t) ? null : String(uiStore.currentDate || '').trim();
-  if (!off && !isTempStopped(t)) { showWarningToast('当前未选中交易日，无法确定关停日'); return; }
-  saving.value = true;
-  try {
-    await setTempCoreTopicDisabled(t.id, off);
-    refreshList();
-    showToast(off
-      ? '✅ 临时题材「' + t.name + '」已从 ' + off + ' 起关停，之后恢复主流题材'
-      : '✅ 临时题材「' + t.name + '」已恢复');
-    _emit('auction-refresh');
-  } catch (e) {
-    console.error('[TEMP-CORE] 关停/恢复失败:', e);
-    showWarningToast('❌ ' + (isTempStopped(t) ? '恢复' : '关停') + '失败：' +
-      (e && e.message ? e.message : '未知错误'), 8000);
-  } finally {
-    saving.value = false;
-  }
-}
-// ★★ [CORE-PURGE-STRING 2026-11-17 用户口径] 删除临时题材 = 删词 + 清理题材串（与正式核心词同一套）。
-//
-// 用户原话：「我删除核心词东方后，变成只显示东方海洋(水产品,农业,羊字辈)」——
-//   「东方」正是【临时题材】（core_topic_temp），所以删除入口也必须走清理，
-//   否则删完临时词，双击竞价量弹出来的 note 里照样是 `(水产品,农业,东方,羊字辈)`。
-//
-// §11：先读出影响面再让用户确认，读失败就什么都不做（⛔ 不静默、不盲删）。
-function removeTemp(t) {
-  void doRemoveTemp(t);
-}
-async function doRemoveTemp(t) {
-  purging.value = true;
-  let plan = null;
-  try {
-    plan = await previewCoreWordPurge(t);   // 只读，不写
-  } catch (e) {
-    console.error('[TEMP-CORE] 预览清理影响面失败:', e);
-    showWarningToast('❌ 读取题材库失败，已取消删除（未做任何改动）：' +
-      (e && e.message ? e.message : '未知错误'), 9000);
-    return;
-  } finally {
-    purging.value = false;
-  }
-  askConfirm('确定删除临时题材「' + t.name + '」？',
-    purgeConfirmDesc(t, plan) + '\n\n删除后它在所有日期都不再生效，且不可撤销。若只是想提前结束，请用【关停】。',
-    '确定删除',
-    async () => {
-      saving.value = true;
-      try {
-        await deleteTempCoreTopic(t.id);
-        refreshList();
-        showToast('✅ 已删除临时题材「' + t.name + '」');
-      } catch (e) {
-        console.error('[TEMP-CORE] 删除失败:', e);
-        showWarningToast('❌ 删除失败：' + (e && e.message ? e.message : '未知错误'), 8000);
-        saving.value = false;
-        return;
-      }
-      saving.value = false;
-      // 词删掉之后再清题材库 / 题材串（顺序同正式核心词：先删词，失败只剩残留，可幂等重试）
-      const needPurge = plan && (plan.affectedStocks > 0 ||
-        (plan.stringPlan && plan.stringPlan.affectedRows > 0));
-      if (needPurge) await runPurge(t);
-      else _emit('auction-refresh');
-    });
-}
 async function saveEdit() {
   const idx = editIndex.value;
   if (idx === null) return;

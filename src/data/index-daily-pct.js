@@ -52,6 +52,22 @@ const CACHE_MAX = 8;
 /** 读失败冷却（表/权限还没就绪时不白打 REST） */
 let _cooldownUntil = 0;
 const FAIL_COOLDOWN_MS = 30000;
+/**
+ * ★ [IDX-QT-BREAKER 2026-11-24 用户报障「题材量比的响应速度有些变慢了」] 腾讯兜底的**熔断**。
+ *
+ * 🔴 实测（11-24 23:09，真实 CDP 网络）：一次冷启动发出 11 个请求，其中 **8 个是腾讯指数日线**，
+ *    4 只指数 × 2 个 host，**全部 HTTP 501**（腾讯 WAF 拦 IP）。冷启动因此从 ~1s 拖到 4.7s，
+ *    而且每切一次日期就再来一遍 —— 浏览器 6 条连接被这 8 个必败请求占住，整块看板都跟着慢。
+ *
+ * 为什么以前没暴露：云端 `market_metrics(scope='index')` 只从 09-08 开始有行，而个股逐日腿能回溯到
+ *   08-12 ⇒ 前端 19 天的「缺口」恒定存在 ⇒ `need`（m.size < list.length）恒为真 ⇒ 腾讯**每次都打**。
+ *   上游挡了以后，这 8 个请求就成了纯损耗。
+ *
+ * ⇒ 熔断：整批一根 bar 都没拿到（= 被挡/超时）就停 10 分钟，期间一律走云端（缺口如实记进 missing）。
+ *   ⛔ 这不是「用延迟掩盖根因」：根因是上游按 IP 拦，我们只能不重复打；缺口由 §10 如实上报。
+ */
+let _qtCooldownUntil = 0;
+const QT_FAIL_COOLDOWN_MS = 10 * 60 * 1000;
 
 function _put(key, val) {
   _cache.set(key, val);
@@ -67,6 +83,42 @@ export function clearIndexDailyPctCache() {
   _cache.clear();
   _inflight.clear();
   _cooldownUntil = 0;
+  _qtCooldownUntil = 0;
+}
+
+/** 仅供测试 / 诊断：腾讯兜底是否正在熔断中（毫秒；0 = 正常） */
+export function qtCooldownLeftMs() {
+  return Math.max(0, _qtCooldownUntil - Date.now());
+}
+
+/**
+ * 【纯函数】这些指数里，哪些**真的还需要**去腾讯补？
+ *
+ * ★ [IDX-QT-BREAKER 2026-11-24] 旧判据 `m.size < list.length` 拿【条数】比【日期数】：
+ *   只要云端比个股腿少一天（哪怕缺的是 3 个月前的 19 天）就判「需要兜底」⇒ 每次都打腾讯。
+ *   现在改成**按日期集合**判，而且只把「云端覆盖区间内部的空洞」算作缺口：
+ *     · `horizon` = 最近 needDays 个交易日（偏离值 30 日窗口 + 触发回看 60 日 ⇒ 65 足够）；
+ *     · 云端**起点之前**那段（前缀）不算缺口 —— 那不是「漏了」，是「还没那么早的数据」，
+ *       去腾讯也补不回来（实测 2026-11-24 腾讯两个 host 全部 HTTP 501，被 WAF 按 IP 拦）。
+ *       前缀缺失只影响很久以前的复盘窗口（判不出会如实显示「—」，§10），不影响今天。
+ * @param {string[]} codes 要判的指数代码（已按调用方实际用到的板块筛过）
+ * @param {Map<string, Map<string, number>>} map 云端已拿到的腿
+ * @param {string[]} horizon 关心的交易日（升序）
+ * @returns {string[]} 仍需兜底的指数代码（[] = 云端够用，⛔ 不许再打上游）
+ */
+export function indicesNeedingQt(codes, map, horizon) {
+  const hs = Array.isArray(horizon) ? horizon : [];
+  const out = [];
+  (codes || []).forEach(function (c) {
+    const m = map && typeof map.get === 'function' ? map.get(c) : null;
+    if (!m || m.size === 0) { out.push(c); return; }        // 一根都没有 ⇒ 当然要兜
+    if (hs.length === 0) return;                            // 没有窗口信息 ⇒ 不主动打上游
+    let earliest = '';
+    m.forEach(function (_v, d) { if (!earliest || d < earliest) earliest = d; });
+    const hole = hs.some(function (d) { return d > earliest && !m.has(d); });
+    if (hole) out.push(c);
+  });
+  return out;
 }
 
 /** 纯函数：腾讯日线（收盘序列）→ 逐日涨幅腿 [{date, pct}]（第一根没有前收 ⇒ 不出腿） */
@@ -122,6 +174,9 @@ async function _readCloud(dates) {
  * @param {object} [opts]
  * @param {boolean} [opts.allowQt=true] 云端不够时是否允许直连腾讯兜底
  * @param {number}  [opts.qtDaysBack=45] 腾讯兜底时向前多取的自然日（保证窗口首日有前收）
+ * @param {number}  [opts.needDays=65] 「够不够用」按最近多少个交易日判（30 日窗口 + 60 日触发回看）
+ * @param {string[]} [opts.codes] 只取这几只指数（缺省 = 官方 4 只）。调用方知道自己的票都在哪些板块时
+ *        应当传进来 —— 腾讯 fan-out 与云端解析量都跟着减半（[IDX-QT-BREAKER]）
  * @returns {Promise<{ready:boolean, map:Map<string, Map<string, number>>,
  *                    missing:string[], src:string, error:string}>}
  *          map: 指数代码 -> Map<date, 涨幅%>；
@@ -132,19 +187,24 @@ export async function readIndexLegsForDates(dates, opts) {
   const allowQt = o.allowQt !== false;
   const list = Array.from(new Set((dates || []).map(function (d) { return String(d || '').slice(0, 10); })
     .filter(Boolean))).sort();
+  // ★ [IDX-QT-BREAKER] 调用方只关心自己那几只指数时，别把 4 只都算进来（腾讯 fan-out 直接减半）
+  const wantCodes = Array.isArray(o.codes) && o.codes.length
+    ? o.codes.filter(function (c) { return DEV_INDEX_CODES.indexOf(String(c)) >= 0; })
+    : DEV_INDEX_CODES;
   const emptyFail = function (msg) {
-    return { ready: false, map: new Map(), missing: DEV_INDEX_CODES.slice(), src: 'none', error: msg || '' };
+    return { ready: false, map: new Map(), missing: wantCodes.slice(), src: 'none', error: msg || '' };
   };
   if (list.length === 0) return emptyFail('没有需要计算的交易日');
 
-  const key = list[0] + '|' + list[list.length - 1] + '|' + list.length + '|' + (allowQt ? 'qt' : 'db');
+  const key = list[0] + '|' + list[list.length - 1] + '|' + list.length + '|' +
+    (allowQt ? 'qt' : 'db') + '|' + wantCodes.join(',');
   if (_cache.has(key)) return _cache.get(key);
   if (_inflight.has(key)) return _inflight.get(key);
   if (Date.now() < _cooldownUntil) return emptyFail('读取失败冷却中（30 秒后自动重试）');
 
   const task = (async function () {
     const map = new Map();
-    DEV_INDEX_CODES.forEach(function (c) { map.set(c, new Map()); });
+    wantCodes.forEach(function (c) { map.set(c, new Map()); });
     let cloudError = '';
 
     // ① 云端
@@ -163,35 +223,44 @@ export async function readIndexLegsForDates(dates, opts) {
       _dbgLog('[INDEX-LEGS] 云端读取失败：' + cloudError);
     }
 
-    // ② 腾讯兜底：哪个指数缺哪天，就整窗拉一次再补（不覆盖云端值）
-    const need = DEV_INDEX_CODES.filter(function (c) {
-      const m = map.get(c);
-      return m.size < list.length;
-    });
+    // ② 腾讯兜底（★ [IDX-QT-BREAKER] 只补「云端覆盖区间内部的空洞」，且熔断期内一律不打）
+    //   旧判据 m.size < list.length 把「云端起点之前的前缀」也算成缺口 ⇒ 19 天恒定缺口
+    //   ⇒ 每次冷启动 8 个必败请求（实测全 501）。见 indicesNeedingQt 注释。
+    const horizon = list.slice(-(o.needDays || 65));
+    const need = indicesNeedingQt(wantCodes, map, horizon);
     let qtUsed = false;
-    if (allowQt && need.length > 0) {
+    const qtLeft = _qtCooldownUntil - Date.now();
+    if (allowQt && need.length > 0 && qtLeft <= 0) {
       const from = _shiftDays(list[0], -(o.qtDaysBack || 45));
       const to = list[list.length - 1];
+      let gotBars = 0;
       try {
         const bars = await fetchQtIndexBars(need, from, to, { timeoutMs: 9000, concurrency: 4 });
         need.forEach(function (c) {
           const b = bars.get(c);
           if (!b || b.length === 0) return;
+          gotBars++;
           const n = mergeLegs(map.get(c), barsToPctLegs(b));
           if (n > 0) qtUsed = true;
         });
       } catch (e) {
         _dbgLog('[INDEX-LEGS] 腾讯兜底失败：' + ((e && e.message) || e));
       }
+      // 整批一根都没拿到 ⇒ 上游在挡（WAF/超时）⇒ 熔断 10 分钟，⛔ 不再每片都去打一遍
+      if (gotBars === 0) {
+        _qtCooldownUntil = Date.now() + QT_FAIL_COOLDOWN_MS;
+        _dbgLog('[INDEX-LEGS] 腾讯兜底整批失败（' + need.length + ' 只）⇒ 熔断 ' +
+          Math.round(QT_FAIL_COOLDOWN_MS / 60000) + ' 分钟，期间只用云端腿（缺口如实上报）');
+      }
     }
 
-    const missing = DEV_INDEX_CODES.filter(function (c) { return map.get(c).size === 0; });
-    const ready = DEV_INDEX_CODES.some(function (c) { return map.get(c).size > 0; });
+    const missing = wantCodes.filter(function (c) { return map.get(c).size === 0; });
+    const ready = wantCodes.some(function (c) { return map.get(c).size > 0; });
     const res = {
       ready: ready,
       map: map,
       missing: missing,
-      src: ready ? (qtUsed ? (missing.length === DEV_INDEX_CODES.length ? 'qt' : 'db+qt') : 'db') : 'none',
+      src: ready ? (qtUsed ? (missing.length === wantCodes.length ? 'qt' : 'db+qt') : 'db') : 'none',
       error: cloudError
     };
     if (ready) {

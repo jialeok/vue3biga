@@ -22,10 +22,64 @@ import { getAuctionData } from '../logic/app-core.js';
 
 // 一次性迁移：将本地 allData.auction 按 in_watchlist 拆到 auction_watchlist 与 market_metrics(scope='auction')。
 // 拆表后：in_watchlist===true 的行进入 auction_watchlist；in_watchlist!==true 的行进入 market_metrics(scope='auction')。
+//
+// 🔴🔴 [MIGRATE-SHADOW-POLLUTION 2026-11-19 用户报障 —— 本次真因，务必读完再改]
+//   用户原话：「早盘竞价看板第一页历史日期默认莫名其妙多了很多票，这个非常严重。我之前都强调
+//     好几次了。它主要分成龙头组，常规组，观察组，20天补，30天补……股票不可能每天超过100只的，
+//     为什么增那么多……最主要来源就是上面显示的那个同花顺最近多板n只，这个是原始来源。」
+//
+//   云端取证（`.tmpdiag/_v23-scope.mjs`，逐日聚合 created_at）：**每个历史日期都有 32~85 行是
+//   「事后」写进去的**（created_at 的日期 > 该行的 date），`source='worker'/'numcat'`、
+//   `updated_by='main'`、`obs_auto_added=false`、且行情数值是该日真实值 ⇒ 不是拷贝，是「转正」。
+//
+//   根因就是本函数（两处叠加，缺一都不会出事）：
+//     ① 准入判据用的是 `item.in_watchlist !== false`（旧模型字段）。**新模型早已没有这个字段** ⇒
+//        `undefined !== false` 恒真 ⇒ 内存里的【影子行情行】（market_metrics 行，来自 worker 的
+//        「抓取名单 constituents」= 前一日名单 ∪ 打标签 ∪ 龙头名册，比 883410 成分股多几十只）
+//        被当成正式成员；
+//     ② 写入用 `ignoreDuplicates:true` 直插 auction_watchlist ⇒ 影子行被**物理转正**。
+//        ⇒ 于是「同花顺最近多板 31 只」的日子，正式成员却有 60~93 只。
+//   触发条件：`_auction_table_migrated` 这个 localStorage 标记缺失。**换手机 / 清缓存 / 换浏览器
+//   / 无痕窗口**都会缺 ⇒ 每次首屏后 8 秒（scheduleMigrations）就用「当前内存里全部日期」重写一遍，
+//   所以越老的日期被转正得越多（历史累积的影子行更多）。
+//
+//   ✅ 本次修复（两条，都是「收紧」不是「放开」）：
+//     ⓐ **新表已有数据 ⇒ 拆表早已完成 ⇒ 一律不写**，只补标记并返回。
+//        依据：auction_watchlist 里已经有行，说明这台设备/这个库早就跑在新模型上了，此处的
+//        「旧 localStorage → 新表」迁移对它**没有任何正收益**，只有污染风险。
+//     ⓑ 万一真的要走旧路径（新表可达但**空表** = 全新库），准入也改成**严格** `in_watchlist === true`
+//        —— 只有旧模型里被**显式**标成正式成员的行才允许转正；字段缺失（新模型形状）一律走
+//        market_metrics（影子行），⛔ 绝不再把 `undefined` 当正式成员。
+//   ⚠️ §11：本函数从不删除任何行；这里只收紧「写什么」，不改变「读失败 = 不知道」的语义。
 export async function migrateAuctionToTable() {
     if (localStorage.getItem('_auction_table_migrated') === '1') { // 合规：一次性迁移标记（§8 允许）
         state._auctionTableAvailable = true; // 已迁移过，标记表可用
         state._marketMetricsTableAvailable = true;
+        return;
+    }
+    // ★ [MIGRATE-SHADOW-POLLUTION ⓐ] 新表里已经有行 ⇒ 拆表早就完成了，⛔ 一个字节都不许写。
+    //   §10：读失败（error）不等于「表是空的」⇒ 读失败时也**不迁移**（不写 = 最安全），
+    //   只是不补标记，下次启动再探一次。
+    try {
+        const sb0 = getSupabase();
+        const { data: probe, error: probeErr } = await sb0.from('auction_watchlist').select('date').limit(1);
+        if (!probeErr) {
+            state._auctionTableAvailable = true;
+            if (Array.isArray(probe) && probe.length > 0) {
+                localStorage.setItem('_auction_table_migrated', '1'); // 合规：一次性迁移标记（§8 允许）
+                _dbgLog('[MIGRATE] auction_watchlist 已有数据 ⇒ 拆表早已完成，本次不做任何写入（防止把影子行转正）');
+                try {
+                    const { error: mErr } = await sb0.from('market_metrics').select('date').eq('scope', 'auction').limit(1);
+                    state._marketMetricsTableAvailable = !mErr;
+                } catch (e) { /* metrics 表不可用不阻断：只影响可用性标记 */ }
+                return;
+            }
+        } else {
+            _dbgLog('[MIGRATE] 探测 auction_watchlist 失败（' + (probeErr.message || probeErr) + '）⇒ 本次不迁移（§10 读失败≠空表）');
+            return;
+        }
+    } catch (e) {
+        _dbgLog('[MIGRATE] 探测 auction_watchlist 异常（' + (e && e.message) + '）⇒ 本次不迁移');
         return;
     }
     const auctionData = getAuctionData();
@@ -75,7 +129,10 @@ export async function migrateAuctionToTable() {
                 change_pct: item.changePct || '',
                 updated_at: now, updated_by: 'main'
             };
-            if (item.in_watchlist !== false) {
+            // ★ [MIGRATE-SHADOW-POLLUTION ⓑ] 严格判据：只有旧模型里**显式** in_watchlist===true 的
+            //   行才算正式成员。字段缺失（新模型形状，undefined）⇒ 走 market_metrics（影子行）。
+            //   ⛔ 不要退回 `!== false`：新模型没有这个字段，那等于「全部转正」。
+            if (item.in_watchlist === true) {
                 watchlistBatch.push(Object.assign({}, baseRow, {
                     note: item.note || '',
                     topics: item.topics || '',

@@ -209,6 +209,54 @@ describe('collectBuyNames — 昨日买点侧的股票名（次日卖点侧自�
     expect(collectBuyNames({})).toEqual([]);
     expect(collectBuyNames({ blocks: [{ picks: null }] })).toEqual([]);
   });
+
+  // ★★ [SELL-INHERIT-BUYABLE 2026-11-19 用户报障] 「题材量比卖点侧的继承的股票就是对不上，
+  //   还是原来的那些旧规则的票，并没有同步更新。」
+  //   ⇒ 继承必须与「选股 N 只」同一把尺子：**不买的行不许继承**。
+  it('★ 灰块里「分歧日不买」的行 ⛔ 不继承（11-17 广百股份 / 日出东方 就是这个坑）', () => {
+    const names = collectBuyNames({
+      blocks: [
+        { topic: '大消费', picks: [
+          { name: '广百股份', buyActionTag: '分歧日不买' },
+          { name: '日出东方', buyActionTag: '分歧日不买' }
+        ] },
+        { topic: '30日涨幅抱团', picks: [{ name: '九阳股份', buyActionTag: '30日涨幅抱团' }] }
+      ]
+    });
+    expect(names).toEqual(['九阳股份']);
+  });
+
+  it('★ 七枚「不买 / 不开新仓 / 禁入」标签逐一都不继承', async () => {
+    const { NO_BUY_ACTION_TAGS } = await import('./tvrb-constants.js');
+    expect(NO_BUY_ACTION_TAGS.length).toBeGreaterThan(0);
+    NO_BUY_ACTION_TAGS.forEach((tag) => {
+      expect(collectBuyNames({ blocks: [{ picks: [{ name: '某只票', buyActionTag: tag }] }] })).toEqual([]);
+    });
+  });
+
+  it('★ abnormalTopicBlocked（异动第三天同题材禁入）⇒ 不继承', () => {
+    expect(collectBuyNames({ blocks: [{ picks: [{ name: '某只票', abnormalTopicBlocked: true }] }] })).toEqual([]);
+  });
+
+  it('★ 能买的标签（30日涨幅抱团 / 补涨 / 弱势切抱团 / 竞价一字等下杀买）照常继承', () => {
+    ['30日涨幅抱团', '补涨题材', '弱势切抱团', '竞价一字涨停·等下杀买'].forEach((tag) => {
+      expect(collectBuyNames({ blocks: [{ picks: [{ name: '某只票', buyActionTag: tag }] }] })).toEqual(['某只票']);
+    });
+  });
+
+  it('★ 无标签 ⇒ 按能买处理（§10：缺标签不等于不能买，正常买点行本来就没标签）', () => {
+    expect(collectBuyNames({ blocks: [{ picks: [{ name: '某只票' }] }] })).toEqual(['某只票']);
+  });
+
+  it('★ 静态锁：collectBuyNames 必须走 `_isBuyablePick`（⛔ 不许在继承侧另写一套标签判断）', () => {
+    const src = readFileSync(new URL('./plan-live-overlay.js', import.meta.url), 'utf8');
+    const start = src.indexOf('export function collectBuyNames');
+    const body = src.slice(start, src.indexOf('\n}', start));
+    expect(body).toContain('_isBuyablePick(p)');
+    expect(src).toContain("from './tvrb-utils.js'");
+    // ⛔ 继承侧不许再出现「裸比 buyActionTag」的第二把尺子
+    expect(body).not.toContain('buyActionTag');
+  });
 });
 
 describe('静态锁 — 接线不许被改回去', () => {

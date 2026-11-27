@@ -1,280 +1,235 @@
-// abnormal-10d.js — 「监管异动 · 十日涨幅硬上限」的【唯一判定实现】（Logic 层纯函数，§15 可单测）
+// abnormal-10d.js — 「监管异动」的【唯一判定实现】（Logic 层纯函数，§15 可单测）
 //
 // ══════════════════════════════════════════════════════════════════════════════════════
-// ★★ 用户口径（2026-11-13 原话，逐字）★★ 见 tvrb-constants.js 的第三十四条常量块
+// ★★★ [DEV-RULE 2026-11-25 口径整体替换] 本文件已从「十日涨幅硬上限」换成
+//      **交易所官方「收盘价格涨跌幅偏离值累计值」**。
+//      ★ [2026-11-26] 旧口径的常量（95 / 97 / 100）与文案提及**已从上到下彻底删除** ——
+//        仓库里不再有「自定义涨幅上限」这个东西，⛔ 也别加回来。
 // ══════════════════════════════════════════════════════════════════════════════════════
-//   核心三句（① 的阈值已被 2026-11-13 晚间用户修订，见下）：
-//     ① 「新增总约束，十日涨幅竞价口径不能超过 95%」—— 95 是【自定义选股上限】；
-//     ② 「十日达到 100% 异动，提示空仓，选出的票整块变灰色（不用去掉）」；
-//     ③ 「总龙一异动次日……也要空仓，不再选票……不在买进任何股票」。
+//   用户原话（2026-11-25，逐字）：
+//     「之前我自定义的 100% 涨幅那个就触发监管异动，那个有些不准，之前你们也提醒要更换口径，
+//       换成官方偏离值，当时我说观察一段时间，现在观察后，确实是需要改下统一口径是官方偏离值
+//       那里产生异动监管，而不是自定义的。也是按照原来的规则要记录首次异动，异动次日等规则不变，
+//       只是口径要改变。」
 //
-// ★★ [CAP-97 2026-11-13 晚间用户修订] ① 的自定义上限 95 → **97**：
-//     用户原话：「不是这样的，超过95%该题材或者股票就比较危险，你把它调到97%吧，
-//     这样就比较合理些，11月11日这样能正常运行，超过97%该题材或者股票就不能选，监管异动了」。
-//     ⇒ 11-11 东方海洋真实竞价口径 95.711445% 必须落在【正常】区间（⛔ 不再顺延 / 不再下线候补）。
+//   ⇒ 形态与后果**一律不变**，只换尺子 + 收紧【判定对象】：
+//     · 判定对象 = **市龙一**（= 30 日涨幅排名第一的【主板】票，用户 11-18 自造的概念，
+//       与「总龙一 = 20 日涨幅第一」是两套独立名次，⛔ 别混）。
+//     · 形态：① 异动次日（市龙一昨日越线）② 当日异动（市龙一今日越线）。**没有第三种**。
+//     · 后果：**全场级** —— 整个市场整片灰 + 空仓 + 一张票都不买（[FULL-MARKET] 口径沿用）。
+//     · 新尺子：10 日偏离 ≥ +100% 或 30 日偏离 ≥ +200%（负向 ≤ −50% / ≤ −70%）
+//       —— 阈值唯一来源 `abnormal-deviation.js#DEV_THRESHOLDS`，⛔ 不许在这里再写数字。
 //
-// ★★★ [FULL-MARKET 2026-11-13 用户当场纠正，最高口径] ★★★
-//     用户原话：「是整个题材的，你没听懂吗？也就是全场整片灰，整个市场也是灰色，没有票可以买，
-//     我都说了总龙一影响范围很大的。这个波及到所有的票。」
-//     ⇒ **> 97% 就是【全场级监管异动】**：不是「跳过那只、顺延下一只」，不是「该题材不选」，
-//       而是【整个市场】整片灰 + 空仓 + 一张票都不买。触发源可以是总龙一 / 昨日总龙一 /
-//       任何一只会被选中的票，但【后果一律波及所有票】（总龙一影响范围很大）。
-//     ⇒ 实现：isOverRange10Cap（near || abnormal）就是【全场禁买判据】；
-//       resolveAbnormalFact 用它判三种 kind，显示层叠加据此整片灰，规则层收口据此清空 buyNames。
-//     ⚠️ 100% 仍保留为文案里的「交易所严重异常波动」分级，只说明【严重程度】，
-//        ⛔ 不再作为「要不要全场空仓」的分界线。
+//   ★★ [MARKET-DRAGON-ONLY 2026-11-25 用户当场纠正，本文件最重要的一条口径] ★★
+//     用户原话（逐字）：
+//       「11月24日，北纬科技，竞价口径，它不是30日涨幅市龙一（涨幅最高的），不能按照市龙一的
+//         标准去做判断，这只能是它个股行为，甚至也不能影响到题材。市龙一冰山冷热没触发监管异动，
+//         就不要出现监管异动 · 今日空仓（不买任何票）……这个红色大提示。
+//         ……如果它触发异动（非逼近红线），才会有原来那个红色提示空仓大板……
+//         不是每只股票一异动，都要提示这个的，因为很多股票都不是市龙一。这个你没理解，
+//         他们只是属于个股异动，和题材无关。」
+//     ⇒ ⛔ **删掉「入选票异动 ⇒ 全场空仓」这一形态**（旧 `kind='stock'`）：
+//       个股越线只是【个股行为】，后果由第三十六条处理（只灰这一只、不空仓、不影响题材）。
+//     ⇒ 只有【市龙一】越线才产生「监管异动 · 今日空仓」红色大板。
+//     ⇒ 这也是 11-24 那次误报的根因：北纬科技（+100.11%）越线但不是市龙一（市龙一 = 冰山冷热），
+//       却被当成「入选票异动」⇒ 全屏空仓 + 华东重机/盛剑科技 被无故灰掉。
+//
+//   ★ 为什么必须换尺子（11-25 真库 36 个交易日逐日复算的实测位移）：
+//     **只有 3 天重合**（10-08 / 10-09 / 10-12）。
+//     旧口径独有：10-13、10-14、11-12；官方独有：10-30（大业股份 +100.14%）、
+//     **11-11（东方海洋 +100.01%）**、11-24（北纬科技 +100.11%）。
+//     ⚠️ 这张表只是「为什么必须换尺子」的诊断证据，⛔ 不是规则，也不用来判断任何一天。
+//     ⚠️ 上表是【全市场偏离值最高票】口径的对照结果，**不等于市龙一口径的异动日**：
+//       市龙一口径下还要再过一个闸 —— 那只票当天是不是 30 日涨幅第 1 的主板票。
+//       实测 11-24 的市龙一是**冰山冷热**（30日 134.21，凡拓数创 150.83 是创业板被排除），
+//       北纬科技不是市龙一 ⇒ 11-24 **不算**异动日（当天按正常规则选票）。
+//       ⇒ 所以「哪天真的空仓」必须按市龙一重新过一遍，⛔ 不要拿上面那张表当结论。
 //
 // 职责边界（§3 / §4 / §21）：
-//   · 本模块【只做两件事】：把涨幅分级（ok / near / abnormal）+ 把事实拼成一块可渲染的标语；
-//   · ⛔ 不取数、不落库、不发请求：昨日十日涨幅 / 今日十日涨幅 / 总龙一身份全部由
-//     组合式（useTopicVolRatioBoard）与采集层注入 —— 与本模块无关；
+//   · 本模块【只做两件事】：把偏离事实分级（near / severe）+ 把事实拼成一块可渲染的标语；
+//   · ⛔ 不取数、不落库、不发请求：偏离事实由组合式（useAbnormalDeviation）算好注入；
 //   · ⛔ 不判「要不要顺延下一龙位」：[FULL-MARKET] 口径下**根本没有顺延**；
-//     _buildBlock 只负责「踩线票保留展示 + 本块停止选股」，全场整片灰由收口与显示层叠加；
+//     `_buildBlock` 只负责逐行打标签，全场整片灰由收口与显示层叠加；
 //   · ⛔ 不删任何票：本模块只产出文案 + 事实，票的去留由规则层决定 —— 用户「不用去掉」。
-//     ⚠️ [审查订正 2026-11-13] 整块灰化【不是】靠某个 `abnormalGray` 字段（代码里没有这个字段，
-//        旧注释把人往不存在的实现上引）：规则层把 fact 交给 buildCashAlert ⇒ cashAlert.show
-//        驱动视图既有的 `.tvrb-buy-list.tvrb-ebb`（§6 不造第二套灰化）；
-//        `_applyAbnormalNoBuyRules` 只把逐行标签改成【异动不买】。`abnormalPick` 是留痕字段。
+//     ⚠️ 整块灰化【不是】靠某个 `abnormalGray` 字段（代码里没有这个字段）：规则层把 fact 交给
+//        buildCashAlert ⇒ cashAlert.show 驱动视图既有的 `.tvrb-buy-list.tvrb-ebb`（§6 不造第二套灰化）。
 //
 // §10 红线（⛔ 一次都不能破）：
-//   · 涨幅读不到（null / 空串 / 非法）⇒ 分级 = 'unknown'，⛔ 绝不补 0、⛔ 绝不当成「没异动」下结论；
-//   · 总龙一身份读不到 ⇒ fact.unknownLeader = true，文案如实写「判不出」，⛔ 不假装「总龙一没异动」；
+//   · 偏离值读不到（`ok!==true` / 腿缺）⇒ 分级判不出，⛔ 绝不补 0、⛔ 绝不当成「没异动」下结论；
+//   · 市龙一身份读不到（30 日涨幅榜没就绪）⇒ fact.unknownLeader = true，文案如实写「判不出」，
+//     ⛔ 绝不退回「随便挑一只偏离值最高的票」冒充市龙一（11-24 那次误报就是这么来的）；
 //   · 昨日那份没读到 ⇒ 只判「当日异动」，不判「异动次日」，文案注明缺口（⛔ 不能沉默）。
 // ══════════════════════════════════════════════════════════════════════════════════════
 
 import {
-  TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG,
-  ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, ABNORMAL_KIND_STOCK, TVRB_ABNORMAL_NONE
+  ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG,
+  ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, TVRB_ABNORMAL_NONE
 } from './tvrb-constants.js';
-import { _num, _pct2 } from './tvrb-utils.js';
+// ★ [DEV-RULE 2026-11-25] 官方偏离值口径：档位判据统一走 deviation-rule-facts（§6 一份实现）
+//   ★ [MARKET-DRAGON-ONLY 2026-11-25] `pickSevereDeviation`（「越线最严重那只」= 择一触发源）
+//     已不再需要：判定对象唯一是市龙一，⛔ 没有「从一批票里挑一个」的场景。
+import { deviationRuleStage, DEV_RULE_SEVERE, DEV_RULE_NEAR } from '../auction/deviation-rule-facts.js';
 
-/** 分级：未知（读不到） / 正常 / 已触发全场监管异动（>97 且 <100） / 程度更重的异动（≥100）
- *  ⚠️ [FULL-MARKET] near 与 abnormal 只是【文案程度分级】，**后果完全相同**（全场空仓）。 */
+/**
+ * 分级（★ [DEV-RULE 2026-11-25] 换官方口径后，四档语义重写）：
+ *   · `unknown`  —— 偏离值判不出（腿缺 / 读失败）。⛔ 绝不等价于「没异动」
+ *   · `ok`       —— 已算出且未越线（含 `watch`「偏离放大·留意」：用户明确不算，见 deviation-rule-facts）
+ *   · `near`     —— 逼近交易所偏离红线（红线 × 0.9），**还没越线**
+ *   · `abnormal` —— 已达交易所「严重异常波动」标准（10日 ≥ +100% / 30日 ≥ +200%）
+ * ⚠️ [FULL-MARKET] `near` 与 `abnormal` 在**本条（第三十四条）里后果不同**：
+ *     只有 `abnormal`（真越线）才构成「监管异动 ⇒ 全场空仓」；
+ *     `near` 由第三十六条单独处理（**只那一只**不给买点）。⛔ 别再把两者混为一谈
+ *     —— 那是旧自定义口径（>97% 即全场空仓）留下的语义，用户已明确改掉。
+ */
 export const ABNORMAL_LEVEL_UNKNOWN = 'unknown';
 export const ABNORMAL_LEVEL_OK = 'ok';
 export const ABNORMAL_LEVEL_NEAR = 'near';
 export const ABNORMAL_LEVEL_ABNORMAL = 'abnormal';
 
 /**
- * 【纯函数】十日涨幅（竞价口径，单位 = %）→ 分级。
+ * 【纯函数】一条官方偏离值事实 → 监管异动分级。
  *
- * 边界口径（[CAP-97] + [FULL-MARKET] ⛔ 别改，改了与规则手册条文不一致）：
- *   · pct ≥ 100              ⇒ 'abnormal'（程度更重；后果与 near **完全相同**）
- *   · pct >  TVRB_RANGE10_CAP ⇒ 'near'（已触发【全场级监管异动】：整片灰 + 全市场空仓）
- *   · pct ≤  TVRB_RANGE10_CAP ⇒ 'ok'（含 11-11 真实的 95.711445% ⇒ 正常运行）
- *   · 读不到                  ⇒ 'unknown'（§10 不补 0）
- *   ⚠️ near / abnormal 的区别【只在文案】，`isOverRange10Cap` 对两者都返回 true。
- *      ⛔ 不许再把它读成「票级禁选预警」或「顺延下一只」。
+ * ★★ [DEV-RULE 2026-11-25 口径整体替换 · 旧口径已 repealed] ★★
+ *   旧口径（已删除）：`classifyRange10(pct)` 按「十日涨幅（9:26 竞价）> 97%」分级。
+ *   用户原话：「之前我自定义的 100% 涨幅那个就触发监管异动，那个有些不准，之前你们也提醒要
+ *     更换口径，换成官方偏离值……现在观察后，确实是需要改下统一口径是官方偏离值那里产生
+ *     异动监管，而不是自定义的。也是按照原来的规则要记录首次异动，异动次日等规则不变，
+ *     只是口径要改变。」
+ *   ⇒ 现在只认【官方严重异常波动】：10日偏离 ≥ +100% 或 30日 ≥ +200%（负向 ≤ −50% / ≤ −70%）。
  *
- * @param {number|string|null|undefined} pct
- * @returns {{level:string, pct:number|null, pctText:string}}
+ * 为什么两套尺子会给出不同答案（11-25 真实库实测，36 个交易日）：
+ *   · 11-12 东方海洋：十日涨幅 +100.78%（旧口径 ⇒ 异动），但同期指数在涨，
+ *     偏离值只有 **+99.14%**（官方 ⇒ 差 0.86 点，不算异动）；
+ *   · 11-11 东方海洋：十日涨幅只有 95.71%（旧口径 ⇒ 不算），偏离值却是 **+100.01%**（官方 ⇒ 异动）。
+ *   两套尺子 36 天里各触发 6 天、只有 3 天重合 ⇒ 这就是用户说的「有些不准」。
+ *
+ * @param {object|null} fact `abnormal-deviation.js#computeDeviation` 的返回
+ * @returns {{level:string, dev10:number|null, dev30:number|null, stage:string}}
+ *          `unknown` = 判不出（§10 绝不当作「没异动」）；`near` 与 `abnormal` 的**后果不同**：
+ *          `abnormal` = 监管异动（第三十四条：全场空仓 + 三十四·b 三天同题材禁入）；
+ *          `near` = 逼近红线（第三十六条：只这只票不给买点 / 卖点当天出掉）。
  */
-export function classifyRange10(pct) {
-  const n = _num(pct);
-  if (n === null) {
-    return { level: ABNORMAL_LEVEL_UNKNOWN, pct: null, pctText: '—' };
-  }
-  if (n >= TVRB_RANGE10_ABNORMAL) {
-    return { level: ABNORMAL_LEVEL_ABNORMAL, pct: n, pctText: _pct2(n) };
-  }
-  if (n > TVRB_RANGE10_CAP) {
-    return { level: ABNORMAL_LEVEL_NEAR, pct: n, pctText: _pct2(n) };
-  }
-  return { level: ABNORMAL_LEVEL_OK, pct: n, pctText: _pct2(n) };
+export function classifyDeviation(fact) {
+  const st = deviationRuleStage(fact);
+  const f = fact || {};
+  const out = {
+    level: ABNORMAL_LEVEL_UNKNOWN,
+    dev10: _devNum(f.dev10),
+    dev30: _devNum(f.dev30),
+    stage: String(f.stage || '')
+  };
+  if (!f || f.ok !== true) return out;                  // §10 判不出
+  if (st === DEV_RULE_SEVERE) out.level = ABNORMAL_LEVEL_ABNORMAL;
+  else if (st === DEV_RULE_NEAR) out.level = ABNORMAL_LEVEL_NEAR;
+  else out.level = ABNORMAL_LEVEL_OK;                  // ok / watch 都算「没进规则」
+  return out;
+}
+
+/** 偏离值文本（`+100.11%` / `—`），⛔ 不补 0 */
+export function devPctText(v) {
+  const n = _devNum(v);
+  if (n === null) return '—';
+  return (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+}
+
+function _devNum(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(String(v).replace(/[%,+\s]/g, ''));
+  return isFinite(n) ? n : null;
 }
 
 /**
- * 【纯函数 · §15 唯一「全场禁买」判据】某只票的十日涨幅是否触发【全场级监管异动】。
+ * 【纯函数 · 第三十四条唯一触发尺子】这只票是否已越【官方严重异常波动】红线。
  *
- * ★ [FULL-MARKET 2026-11-13] 这是第三十四条**唯一的触发尺子**：near（>97 且 <100）
- *   与 abnormal（≥100）后果**完全相同** —— 全场整片灰、空仓、一张票都不买。
- *   ⛔ 不再有「near 只跳过这一只、顺延下一只」这种票级处理（用户当场否掉）。
+ * ★★ [DEV-RULE 2026-11-25] 旧 `isOverRange10Cap(pct)`（十日涨幅 > 97%）**已废除（repealed）**。
+ *   新判据 = 官方严重异常波动（10日偏离 ≥ +100% / 30日 ≥ +200%；负向 ≤ −50% / ≤ −70%）。
  *
- * 调用方：
- *   · resolveAbnormalFact —— 判三种 kind（异动次日 / 当日异动 / 票级异动）；
- *   · tvrb-blocks#_buildBlock —— 踩线票所在块【只展示这一只、停止选股】；
- *   · pct ≤ CAP（含 11-11 的 95.711445%）⇒ false，按原规则正常选股。
+ * ⚠️ 与 `near`（逼近红线）**后果不同**：`near` 只禁这一只（第三十六条），
+ *   越线才构成监管异动（第三十四条：全场空仓）。⛔ 别把两者合并成一个布尔 ——
+ *   用户 2026-11-25 明确：「不含「偏离放大（留意）」，因为这个不是很严重」，
+ *   同理 near 也不该引发全场空仓。
  *
- * @param {number|string|null} pct
- * @returns {boolean} true = 触发全场禁买
+ * @param {object|null} fact `computeDeviation` 的返回
+ * @returns {boolean} true = 越线（构成本条异动）
  */
-export function isOverRange10Cap(pct) {
-  const lv = classifyRange10(pct).level;
+export function isOverOfficialRedLine(fact) {
+  return classifyDeviation(fact).level === ABNORMAL_LEVEL_ABNORMAL;
+}
+
+/** 【纯函数】是否进了第三十六条的「不买」范围（near + abnormal） */
+export function isDeviationNearOrOver(fact) {
+  const lv = classifyDeviation(fact).level;
   return lv === ABNORMAL_LEVEL_NEAR || lv === ABNORMAL_LEVEL_ABNORMAL;
 }
 
 /**
- * 【纯函数 · §15】第三十四条【触发源】的择一：把几份候选拼成「一只票的完整事实」。
+ * ★★ [MARKET-DRAGON-ONLY 2026-11-25] `pickRedLineSource`【已废除（repealed）】。
  *
- * ★★ [ABN-SAME-SOURCE 2026-11-13 用户报错后修] 为什么必须有这一步：
- *   用户原话「11月13日提示那个就有错误，上面说市场总龙一闵发铝业十日涨幅100.78%，
- *   根本不是……相差太大了」。库内真实数据：11-13 今日竞价最高 = 闽发铝业 84.88%，
- *   11-12 昨日竞价最高 = 东方海洋 100.78% ⇒ 旧实现把「今日的名」和「昨日的数」拼一起，
- *   差 13~16 个点，还把二十日涨幅只排到 48.56% 的票叫成「市场总龙一」。
- *
- * 判据（⛔ 不许改，改了就是重演事故）：
- *   ① 候选 = { name, topic, pct, basis, isTop1 } **四件套整体存在**，禁止拆开取用；
- *   ② 昨日【竞价口径】优先于【收盘口径】—— 11-11 东方海洋收盘 100.43 / 竞价 95.71，
- *      取收盘会把它误判成异动（用户明确要竞价口径）；
- *   ③ 同一口径内取 pct 最高那只（全市场硬约束「所有大a主板10日涨幅」不能只盯总龙一）；
- *   ④ 触发优先级：昨日（异动次日）> 今日（当日异动），与 resolveAbnormalFact 的 kind 一致；
- *   ⑤ 没触发 ⇒ `triggered:false`，`name` 回落总龙一（保持旧行为，§11）。
- *
- * @param {object} [input]
- * @param {string} [input.leaderName]   20日涨幅主板第 1 名
- * @param {string} [input.leaderTopic]
- * @param {number|string|null} [input.leaderToday]      总龙一今日十日涨幅（竞价口径）
- * @param {number|string|null} [input.leaderPrevAuc]    总龙一昨日十日涨幅（竞价口径）
- * @param {number|string|null} [input.leaderPrevClose]  总龙一昨日十日涨幅（收盘口径，退路）
- * @param {{name:string,pct:number}|null} [input.marketToday]     全市场今日竞价最高票
- * @param {{name:string,pct:number}|null} [input.marketPrevAuc]   全市场昨日竞价最高票
- * @param {{name:string,pct:number}|null} [input.marketPrevClose] 全市场昨日收盘最高票
- * @returns {{triggered:boolean, name:string, topic:string, isTop1:boolean,
- *            basis:string, prevHit:object|null, todayHit:object|null}}
- *          注意：返回值只交代【是哪只票、哪一份口径触发的】，两个具体数值由调用方
- *          **按这个名字重新取**（⛔ 不许在这里顺手塞别的票的数字）。
+ *   它做的是「从一批票的偏离事实里挑越线最严重的那一只」充当触发源 —— 这个抽象本身就是
+ *   上一版口径误解的产物（把「二十日总龙一 / 偏离值最高的票」当触发源）。用户当场纠正：
+ *   「不是每只股票一异动，都要提示这个的，因为很多股票都不是市龙一。这个你没理解，
+ *     他们只是属于个股异动，和题材无关。」
+ *   ⇒ 触发源是**唯一确定的**（市龙一，由组合式 `ebbCtx.mktDragon1` 注入），不存在「挑一只」；
+ *     个股越线由第三十六条 `_applyDeviationNearRule` 逐只处理。函数已删除，⛔ 不许再加回来。
  */
-export function pickAbnormalSource(input) {
-  const i = input || {};
-  const leaderName = String(i.leaderName || '').trim();
-  const leaderTopic = String(i.leaderTopic || '').trim();
 
-  const _cand = function(name, topic, pct, basis, isTop1) {
-    const nm = String(name || '').trim();
-    const v = _num(pct);
-    if (!nm || v === null) return null;
-    return { name: nm, topic: String(topic || '').trim(), pct: v, basis: basis || '', isTop1: !!isTop1 };
-  };
-  const _bestOf = function(cands) {
-    let best = null;
-    (cands || []).forEach(function(c) { if (c && (!best || c.pct > best.pct)) best = c; });
-    return best;
-  };
-  const _mktName = function(m) { return (m && m.name) ? m.name : ''; };
-  const _mktPct = function(m) { return (m && m.pct !== undefined) ? m.pct : null; };
-
-  const prevAucHit = _bestOf([
-    _cand(leaderName, leaderTopic, i.leaderPrevAuc, 'auction', true),
-    _cand(_mktName(i.marketPrevAuc), '', _mktPct(i.marketPrevAuc), 'auction', false)
-  ]);
-  const prevCloseHit = _bestOf([
-    _cand(leaderName, leaderTopic, i.leaderPrevClose, 'close', true),
-    _cand(_mktName(i.marketPrevClose), '', _mktPct(i.marketPrevClose), 'close', false)
-  ]);
-  const todayHit = _bestOf([
-    _cand(leaderName, leaderTopic, i.leaderToday, 'auction', true),
-    _cand(_mktName(i.marketToday), '', _mktPct(i.marketToday), 'auction', false)
-  ]);
-  const prevHit = prevAucHit || prevCloseHit;
-
-  let hit = null;
-  if (prevHit && isOverRange10Cap(prevHit.pct)) hit = prevHit;
-  else if (todayHit && isOverRange10Cap(todayHit.pct)) hit = todayHit;
-
-  if (!hit) {
-    return {
-      triggered: false,
-      name: leaderName,
-      topic: leaderTopic,
-      isTop1: true,
-      basis: '',
-      prevHit: prevHit,
-      todayHit: todayHit
-    };
-  }
-  return {
-    triggered: true,
-    name: hit.name,
-    topic: hit.topic,
-    isTop1: hit.isTop1,
-    basis: hit.basis,
-    prevHit: prevHit,
-    todayHit: todayHit
-  };
-}
-
-/** 「X（题材 +101.20%）」这类点名文案（⛔ 只用于说明，不参与判定，§21 文案在 Logic 层拼好） */
-function _pointOf(name, topic, pctText) {
-  const t = String(topic || '').trim();
-  return '【' + String(name || '—') + '】' + (t ? '（' + t + '，' : '（') + '十日涨幅 ' + pctText + '）';
-}
-
-/**
- * 只带名字 / 题材的点名（涨幅放到后一句）。
- * ★ [ABN-SAME-SOURCE] 触发源那句要写成「…【昨日】十日涨幅 100.78% ＞ 97%」，
- *   如果这里也带一遍涨幅，就会变成「十日涨幅 100.78%…十日涨幅 ＞ 97%」两句重复。
- */
 function _pointOfName(name, topic) {
   const t = String(topic || '').trim();
   return '【' + String(name || '—') + '】' + (t ? '（' + t + '）' : '');
 }
 
 /**
- * 【纯函数】把注入的「事实」判成一块可渲染的异动标语（= cashAlert 的同形状对象）。
+ * 【纯函数】把「市龙一的偏离事实」判成一块可渲染的异动标语（= cashAlert 的同形状对象）。
+ *
+ * ★★ [MARKET-DRAGON-ONLY 2026-11-25 用户当场纠正] ★★
+ *   判定对象**只有市龙一**（30 日涨幅第 1 的主板票）。用户原话：
+ *   「不是每只股票一异动，都要提示这个的，因为很多股票都不是市龙一。这个你没理解，
+ *     他们只是属于个股异动，和题材无关。」
+ *   ⇒ ⛔ 本函数没有 `rows` 入参了（旧「入选票异动 ⇒ 全场空仓」的形态**已删除**）。
+ *     个股越线 ⇒ 第三十六条只灰那一只，⛔ 不空仓、⛔ 不影响题材。
+ *
+ * ★★ [DEV-RULE 2026-11-25 口径整体替换] 尺子从【十日涨幅数字】换成【官方偏离值事实】：
+ *     旧：十日涨幅（9:25 竞价）＞ 97%
+ *     新：官方严重异常波动（10日偏离 ≥ +100% / 30日 ≥ +200%；负向 ≤ −50% / ≤ −70%）
+ *
+ * ⚠️ `near`（逼近红线，红线 ×0.9）**不在这里处理** —— 那是第三十六条（只禁这一只，不空仓）。
+ *   用户明确「不含「偏离放大（留意）」，因为这个不是很严重」。
  *
  * @param {object} [input]
- * ★★ [ABN-SAME-SOURCE 2026-11-13 用户报错后修] 本函数吃的是【一只票的完整事实】：
- *   `leaderName` 与 `leaderPctToday` / `leaderPctPrev` **必须同属那一只票**。
- *   用户原话：「11月13日提示那个就有错误，上面说市场总龙一闵发铝业十日涨幅100.78%，
- *   根本不是，不知道这些数据从哪里来，相差太大了」——实测 11-13 闽发铝业竞价口径只有
- *   84.88%（11-12 是 87.04%），100.78% 是【东方海洋】11-12 的十日涨幅 ⇒ 典型的
- *   「名字取今日最高票、数值取昨日最高票」张冠李戴。⛔ 调用方不许把两份不同来源的
- *   名字 / 数值拼进来；拼对了才准传（取数侧见 tvrb-plan#_abnBestOf）。
- *
- * @param {string} [input.leaderName]      触发源那【一只】票的名字
- *        （正常 = 20日涨幅主板第 1 名；若被全市场最高票接管 ⇒ 是那只票，见 leaderIsTop1）
- * @param {string} [input.leaderTopic]     它的题材（只用于点名，⛔ 不参与判定）
- * @param {boolean} [input.leaderIsTop1]   它到底是不是「20日涨幅主板第 1 名」。
- *        true / 缺省 ⇒ 文案写「市场总龙一」（保持旧行为，旧测试不受影响）；
- *        false ⇒ 写「市场十日涨幅最高票」，⛔ 不许把普通票叫成总龙一。
- * @param {number|string|null} [input.leaderPctToday] 它【今日】的十日涨幅（9:26 竞价口径，pctMap）
- * @param {number|string|null} [input.leaderPctPrev]  它【昨日】的十日涨幅（组合式 prevRange10）
- * @param {'auction'|'close'|''} [input.leaderPctPrevBasis] 昨日那份用的是【竞价口径】还是【收盘口径】
- *        —— ★ 用户要的是竞价口径（原话「东方海洋，昨天竞价口径就超过 100% 了」）；
- *        竞价那份没读到时退回收盘口径，必须在文案里说清（§10：口径不许含糊）。
- * @param {Array<{name:string, topic?:string, pct:number|string|null}>} [input.rows]
- *        今天【会被选中的票】—— 常规题材块 picks + 十日涨幅候补（口径都是十日涨幅）
- *        ⚠️ ⛔ 别把「20日涨幅」通道的票（退潮替补 / 新龙 / 抱团 / 补涨）塞进来：
- *           那些行的 pct 是 20日涨幅，拿它比 TVRB_RANGE10_CAP / 100 是【口径串用】，比不判更坏。
+ * @param {string} [input.leaderName]   市龙一的名字（30 日涨幅第 1 · 只主板）
+ * @param {string} [input.leaderTopic]  它的题材（只用于点名；拿不到就空着，⛔ 不猜）
+ * @param {object|null} [input.leaderDevToday] 它【今日】的偏离事实（当前口径：9:25 竞价）
+ * @param {object|null} [input.leaderDevPrev]  它【昨日】的偏离事实（收盘口径 = 官方唯一口径）
  * @returns {object} 与 TVRB_ABNORMAL_NONE 同形状（show=false ⇒ 一字不动，§11）
  */
 export function resolveAbnormalFact(input) {
   const i = input || {};
   const leaderName = String(i.leaderName || '').trim();
   const leaderTopic = String(i.leaderTopic || '').trim();
-  // ★ [ABN-SAME-SOURCE] 称谓必须与事实一致：不是二十日涨幅总龙一就不许这么叫。
-  const leaderLabel = (i.leaderIsTop1 === false) ? '市场十日涨幅最高票' : '市场总龙一';
-  const today = classifyRange10(i.leaderPctToday);
-  const prev = classifyRange10(i.leaderPctPrev);
-  const rows = Array.isArray(i.rows) ? i.rows : [];
+  // 判定对象固定是市龙一 —— ⛔ 不再有「市场偏离值最高票 / 市场总龙一」两种称谓分支
+  const leaderLabel = '市龙一（30日涨幅第1·主板）';
+  const today = classifyDeviation(i.leaderDevToday);
+  const prev = classifyDeviation(i.leaderDevPrev);
+  // ① [MARKET-DRAGON-ONLY] 判定对象只有一个：市龙一。⛔ 不再遍历「会被选中的票」——
+  //   个股越线（哪怕 +150%）也只是个股行为，由第三十六条灰那一只，⛔ 不空仓、⛔ 不影响题材。
+  //   （`hits` / `near` 两份收集已随该口径删除，⛔ 不要因为「字段还有人读」再把它们加回来。）
 
-  // ① 点名：★ [FULL-MARKET] > 自定义禁选上限的票【一律是全场禁买触发源】。
-  //    near 与 abnormal 都进 hits（后果完全相同）；near / severe 另留一份供说明区点名分级。
-  const hits = [];
-  const near = [];
-  const severe = [];
-  const seen = new Set();
-  rows.forEach(function(r) {
-    if (!r) return;
-    const nm = String(r.name || '').trim();
-    if (!nm || seen.has(nm)) return;
-    seen.add(nm);
-    const lv = classifyRange10(r.pct);
-    const item = { name: nm, topic: String(r.topic || '').trim(), pct: lv.pct, pctText: lv.pctText };
-    if (lv.level === ABNORMAL_LEVEL_ABNORMAL) { hits.push(item); severe.push(item); }
-    else if (lv.level === ABNORMAL_LEVEL_NEAR) { hits.push(item); near.push(item); }
-  });
-
-  // ② 触发形态（优先级：异动次日 > 当日异动 > 入选票异动）
-  // ★ [FULL-MARKET] 判据统一走 isOverRange10Cap（near || abnormal）——
-  //   ⛔ 不再只认 abnormal：97~100 一样要【全场整片灰 + 空仓】，绝不顺延下一只。
+  // ② 触发形态只有两种（优先级：异动次日 > 当日异动）
   let kind = '';
-  if (isOverRange10Cap(i.leaderPctPrev)) kind = ABNORMAL_KIND_NEXT_DAY;
-  else if (isOverRange10Cap(i.leaderPctToday)) kind = ABNORMAL_KIND_LEADER_NOW;
-  else if (hits.length > 0) kind = ABNORMAL_KIND_STOCK;
+  if (prev.level === ABNORMAL_LEVEL_ABNORMAL) kind = ABNORMAL_KIND_NEXT_DAY;
+  else if (today.level === ABNORMAL_LEVEL_ABNORMAL) kind = ABNORMAL_KIND_LEADER_NOW;
 
-  // ③ §10：总龙一的十日涨幅两份都读不到 ⇒ 如实标记「判不出」（⛔ 不假装没有异动）
-  const unknownLeader = !leaderName || (today.level === ABNORMAL_LEVEL_UNKNOWN && prev.level === ABNORMAL_LEVEL_UNKNOWN);
+  // ★★ [MARKET-DRAGON-ONLY 2026-11-25 · §10 硬闸] 市龙一名字读不到 ⇒ 本条【一律判不出】。
+  //   为什么必须显式清空 kind，而不是只在文案里写「判不出」：
+  //     · 本函数的事实是按【名字】取的；名字空着还能 has 到某个事实，只可能是调用方传错
+  //       （例如把全市场 Map 当成「市龙一的事实」塞进 leaderDevToday）。那种情况下判成空仓
+  //       = 拿一只不知名的票让全市场停手，正是 11-24 那次误报的同款后果。
+  //     · 用户口径：「不是每只股票一异动，都要提示这个的」。宁可写「判不出」，⛔ 绝不猜。
+  if (!leaderName) kind = '';
+
+  // ③ §10：市龙一今日/昨日两份都判不出 ⇒ 如实标记「判不出」（⛔ 不假装没有异动）
+  const unknownLeader = !leaderName ||
+    (today.level === ABNORMAL_LEVEL_UNKNOWN && prev.level === ABNORMAL_LEVEL_UNKNOWN);
 
   const base = {
     show: false,
@@ -283,96 +238,92 @@ export function resolveAbnormalFact(input) {
     leaderName: leaderName,
     leaderTopic: leaderTopic,
     leaderLabel: leaderLabel,
-    leaderIsTop1: (i.leaderIsTop1 === false) ? false : true,
-    leaderPctPrev: prev.pct,
-    leaderPctPrevText: prev.pctText,
-    leaderPctToday: today.pct,
-    leaderPctTodayText: today.pctText,
-    names: hits.map(function(x) { return x.name; }),
-    nearNames: near.map(function(x) { return x.name; }),
+    // ★ [MARKET-DRAGON-ONLY 2026-11-25] `leaderIsTop1` 已删除：称谓只有一种（市龙一），
+    //   「是不是二十日总龙一」这个问题本身不存在了 ⇒ 再留一个恒 true 的布尔只会误导后来人。
+    leaderDevPrev: prev.dev10,
+    leaderDevPrev30: prev.dev30,
+    leaderDevPrevText: devPctText(prev.dev10),
+    leaderDevPrev30Text: devPctText(prev.dev30),
+    leaderDevPrevLevel: prev.level,
+    leaderDevToday: today.dev10,
+    leaderDevToday30: today.dev30,
+    leaderDevTodayText: devPctText(today.dev10),
+    leaderDevToday30Text: devPctText(today.dev30),
+    leaderDevTodayLevel: today.level,
+    // 保留 `names`（恒空数组）：`tvrb-blocks.js` 的说明文案里还有一处 `abnormal.names` 读取，
+    // 留个空数组只为不改那处容错分支。★ 它**不再是**触发源，⛔ 别靠它传递「谁越线了」。
+    names: [],
     unknownLeader: unknownLeader,
     headline: '',
     detail: ''
   };
 
-  if (!kind) return Object.assign({}, TVRB_ABNORMAL_NONE, {
-    // 没有异动也要把「判没判过」带出去：说明区靠 unknownLeader / nearNames 交代缺口与超限票。
-    leaderName: base.leaderName,
-    leaderTopic: base.leaderTopic,
-    leaderLabel: base.leaderLabel,
-    leaderIsTop1: base.leaderIsTop1,
-    leaderPctPrev: base.leaderPctPrev,
-    leaderPctPrevText: base.leaderPctPrevText,
-    leaderPctToday: base.leaderPctToday,
-    leaderPctTodayText: base.leaderPctTodayText,
-    nearNames: base.nearNames,
-    unknownLeader: base.unknownLeader
-  });
+  if (!kind) {
+    // 没有异动也要把「判没判过」带出去：说明区靠 unknownLeader 交代缺口
+    return Object.assign({}, TVRB_ABNORMAL_NONE, {
+      leaderName: base.leaderName,
+      leaderTopic: base.leaderTopic,
+      leaderLabel: base.leaderLabel,
+      leaderDevPrev: base.leaderDevPrev,
+      leaderDevPrev30: base.leaderDevPrev30,
+      leaderDevPrevText: base.leaderDevPrevText,
+      leaderDevPrev30Text: base.leaderDevPrev30Text,
+      leaderDevPrevLevel: base.leaderDevPrevLevel,
+      leaderDevToday: base.leaderDevToday,
+      leaderDevToday30: base.leaderDevToday30,
+      leaderDevTodayText: base.leaderDevTodayText,
+      leaderDevToday30Text: base.leaderDevToday30Text,
+      leaderDevTodayLevel: base.leaderDevTodayLevel,
+      unknownLeader: base.unknownLeader
+    });
+  }
 
-  // ④ 文案（§21：★ 大字标语 + 说明全部在 Logic 层拼好，模板零计算）
-  const capLine = '★ 硬上限口径（第' + ABNORMAL_RULE_NO + '条）：十日涨幅（竞价口径）' +
-    '＞ ' + TVRB_RANGE10_CAP + '% ⇒ 【全场监管异动】：整个市场整片灰、【空仓、一张票都不买】；' +
-    '达到 ' + TVRB_RANGE10_ABNORMAL + '% 是交易所「严重异常波动」（程度更重，后果相同）。' +
-    '票照常列出供你核对，⛔ 不删。';
+  // ④ 文案（§21：大字标语 + 说明全部在 Logic 层拼好，模板零计算）
+  const capLine = '★ 判定对象（第' + ABNORMAL_RULE_NO + '条）：**只认市龙一**（= 30日涨幅排名第一的' +
+    '【主板】票，也就是「30日涨幅」那栏的第一名）。⛔ 不是总龙一（20日涨幅第1）、⛔ 也不是' +
+    '「今天偏离值最高的那只票」—— 别的票就算越线，那只是【个股异动】，不会让全市场空仓。' +
+    '★ 判定口径：交易所「严重异常波动」= 10日【收盘价格涨跌幅偏离值】累计 ≥ +100%' +
+    ' 或 30日 ≥ +200%（负向 ≤ −50% / ≤ −70%）。票照常列出供你核对，⛔ 不删。';
   const whyLine = '★ 为什么：用户「总龙一影响范围很大的，这个波及到所有的票」——' +
-    '一旦总龙一（或任何一只会被选中的票）十日涨幅异动，它所在题材次日大概率崩，' +
-    '甚至带崩整个市场情绪 ⇒ 不是「换一只次强的买」，而是【整个市场今天都不买】。' +
-    '自定义禁选上限设在交易所红线前 ' + (TVRB_RANGE10_ABNORMAL - TVRB_RANGE10_CAP) +
-    ' 个点，就是防「99% 就开始有题材崩盘节奏」。★ [CAP-97 2026-11-13 晚间用户修订] ' +
-    '由 95% 上调到 ' + TVRB_RANGE10_CAP + '%：11-11 东方海洋真实的 95.71% 正常运行。';
+    '市龙一是全市场最强的那一只，它一旦被交易所认定严重异常波动，情绪会带崩整个市场，' +
+    '所有题材一起崩 ⇒ 不是「换一只次强的买」，而是【整个市场今天都不买】。' +
+    '反过来，不是市龙一的票越线只属于它自己的事（个股行为），⛔ 不影响题材、⛔ 不让市场空仓。' +
+    '偏离值 = 个股累计涨幅 − 对应指数累计涨幅（复利区间差），所以同样的涨幅，指数涨得多就不算异动。';
 
-  const _trig = function(lv) {
-    return '＞ ' + TVRB_RANGE10_CAP + '%（全场监管异动）' +
-      (lv.level === ABNORMAL_LEVEL_ABNORMAL
-        ? '，且已达 ' + TVRB_RANGE10_ABNORMAL + '% 交易所「严重异常波动」'
-        : '');
+  const _trig = function (lv) {
+    return '10日偏离 ' + devPctText(lv.dev10) + ' / 30日偏离 ' + devPctText(lv.dev30) +
+      ' ⇒ 越「严重异常波动」红线（+100% / +200%）';
   };
-  const prevBasisText = (i.leaderPctPrevBasis === 'auction')
-    ? '（昨日竞价口径）'
-    : (i.leaderPctPrevBasis === 'close' ? '（昨日收盘口径 —— 昨日竞价那份没读到）' : '');
   let lead = '';
   if (kind === ABNORMAL_KIND_NEXT_DAY) {
     lead = leaderLabel + _pointOfName(leaderName, leaderTopic) +
-      '【昨日（上一交易日）】十日涨幅 ' + prev.pctText + ' ' + _trig(prev) +
-      ' ⇒ 今天是【异动次日】：' +
-      '按第' + ABNORMAL_RULE_NO + '条，今天【空仓】—— 不买任何票（' + ABNORMAL_NO_BUY_TAG + '）。';
-  } else if (kind === ABNORMAL_KIND_LEADER_NOW) {
-    lead = leaderLabel + _pointOfName(leaderName, leaderTopic) +
-      '【今日】（9:26 竞价口径）十日涨幅 ' + today.pctText + ' ' + _trig(today) +
-      ' ⇒ 按第' + ABNORMAL_RULE_NO + '条，今天【空仓】—— 不买任何票（' + ABNORMAL_NO_BUY_TAG + '）。';
+      '【昨日（上一交易日，收盘口径）】' + _trig(prev) +
+      ' ⇒ 今天是【异动次日】：按第' + ABNORMAL_RULE_NO + '条，今天【空仓】—— 不买任何票（' +
+      ABNORMAL_NO_BUY_TAG + '）。';
   } else {
-    lead = '入选票 ' + hits.map(function(x) {
-      return _pointOf(x.name, x.topic, x.pctText);
-    }).join('、') + ' 十日涨幅 ＞ ' + TVRB_RANGE10_CAP + '%（全场监管异动）⇒ 按第' +
-      ABNORMAL_RULE_NO + '条，今天【空仓】—— 不买任何票（' + ABNORMAL_NO_BUY_TAG + '）。';
+    lead = leaderLabel + _pointOfName(leaderName, leaderTopic) +
+      '【今日】（9:25 竞价口径）' + _trig(today) +
+      ' ⇒ 按第' + ABNORMAL_RULE_NO + '条，今天【空仓】—— 不买任何票（' + ABNORMAL_NO_BUY_TAG + '）。';
   }
 
   const tail = [];
   if (leaderName) {
-    // ★ [ABN-SAME-SOURCE] 这里两个数字**必须同属这一只票**（同名、同日口径），
+    // ★ [ABN-SAME-SOURCE] 这里两组数字**必须同属这一只票**（同名、各自口径），
     //   用户就是靠这一行自核的：11-13 曾把闽发铝业（84.88%）和东方海洋的 100.78% 拼在一起。
-    tail.push('（自核用）' + leaderLabel + ' ' + leaderName + '：今日十日涨幅 ' + today.pctText +
+    tail.push('（自核用）' + leaderLabel + ' ' + leaderName + '：今日（9:25 竞价口径）10日偏离 ' +
+      base.leaderDevTodayText + ' / 30日 ' + base.leaderDevToday30Text +
       (prev.level === ABNORMAL_LEVEL_UNKNOWN
-        ? '，昨日那份未读到（判不出异动次日）'
-        : '，昨日 ' + prev.pctText + prevBasisText) +
-      '（以上两个数字取自【同一只票】的同一套口径，可逐个核对）。');
+        ? '；昨日那份判不出（逐日腿或指数腿缺）⇒「异动次日」这一条判不出'
+        : '；昨日（收盘口径）10日偏离 ' + base.leaderDevPrevText + ' / 30日 ' + base.leaderDevPrev30Text) +
+      '（以上两组数字取自【同一只票】的同一套官方口径，可逐个核对）。');
   } else {
-    tail.push('⚠️ 总龙一（20日涨幅主板第 1 名）还没读到 ⇒ 只判了入选票自身，' +
-      '「异动次日」这一条【判不出】（§10：判不出 ≠ 没有异动）。');
+    tail.push('⚠️ 市龙一（30日涨幅第 1 名·只主板）还没读到 ⇒ 第' + ABNORMAL_RULE_NO +
+      '条【判不出】（§10：判不出 ≠ 没有异动）。⛔ 不会拿「偏离值最高的那只票」冒充市龙一。');
   }
-  if (near.length > 0) {
-    tail.push('⚠️ 其中 ' + near.map(function(x) {
-      return _pointOf(x.name, x.topic, x.pctText);
-    }).join('、') + ' 落在 ' + TVRB_RANGE10_CAP + '%~' + TVRB_RANGE10_ABNORMAL +
-      '%（已超自定义禁选上限、未到交易所红线）—— ★ 按【全场监管异动】口径一样是' +
-      '【整片灰 + 全市场空仓】，⛔ 不顺延任何票、不换次强的买。');
-  }
-  if (severe.length > 0) {
-    tail.push('⚠️ 达到 ' + TVRB_RANGE10_ABNORMAL + '% 交易所「严重异常波动」的票：' +
-      severe.map(function(x) { return _pointOf(x.name, x.topic, x.pctText); }).join('、') + '。');
-  }
-  tail.push('⚠️ 下方股票仍按原规则【照常列出】（不删不改），但买点标签一律为【' + ABNORMAL_NO_BUY_TAG +
-    '】，不计入「选出 N 只」。');
+  tail.push('⚠️ 下方股票仍按原规则【照常列出】（不删不改），但买点标签一律为【' +
+    ABNORMAL_NO_BUY_TAG + '】，不计入「选出 N 只」。');
+  tail.push('ℹ️ 今天其它票（非市龙一）即使越线，也只是【个股异动】⇒ 只按第三十六条灰掉那一只，' +
+    '不空仓、不影响它所在题材。');
 
   return Object.assign(base, {
     show: true,

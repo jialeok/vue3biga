@@ -292,6 +292,108 @@ export async function upsertRange20Rows(env, rows) {
 }
 
 // ============================================================================
+// [R30-CLOUD 2026-11-20 用户报障] 30 日涨幅结果表的读写。
+//
+// 为什么现在才需要：30 日涨幅原来**只由 GitHub Actions**（`compute-range30-pct.mjs`）写。
+// 生产取证（2026-11-20）发现 Actions 的 schedule 严重漂移：cron 配的是北京 09:28 / 16:45 / 18:30，
+// 实际跑在**北京 01:43 / 03:07**，11-20 当天那三趟一趟都没跑。凌晨跑时当天 `auction_watchlist`
+// 还没生成 ⇒ 候选池退化成「近 40 个交易日名单」⇒ **当天首次出现的票（京蓝科技 / 华升股份 /
+// 格林达 / 江化微 / 海立股份）整天没有 30 日涨幅**，用户看到的就是行上空白。
+// ⇒ Worker 必须在自己的可靠时间线（09:26 / 09:27 / 16:03）把「当天名单」这一块补齐。
+//   Actions 继续负责「近 40 日宽池」（30天/20天补位与龙头组那些注入行）。
+// ============================================================================
+
+/** 当日 stock_range30_pct 已有行（只按 stock 去重：有行就跳过，⛔ 不混 leg 覆盖） */
+export async function readRange30StocksForDate(env, date) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range30_pct?date=eq.' + encodeURIComponent(date) +
+    '&select=stock&order=stock.asc';
+  const data = await sbGetPaged(env, url);
+  const set = new Set();
+  (data || []).forEach(function (r) {
+    const s = String((r && r.stock) || '').trim();
+    if (s) set.add(s);
+  });
+  return set;
+}
+
+/** 写 stock_range30_pct（与 compute-range30-pct.mjs 同一 on_conflict：date,stock,leg） */
+export async function upsertRange30Rows(env, rows) {
+  if (!rows || rows.length === 0) return;
+  await upsertBucketed(env, 'stock_range30_pct',
+    CONFIG.SUPABASE_URL + '/rest/v1/stock_range30_pct?on_conflict=date,stock,leg', rows);
+}
+
+/**
+ * ★★ [R30-FETCH 2026-11-23 用户报障] 读某日「30 日涨幅榜前 N」—— `readRange20TopForDate` 的对称实现。
+ *
+ * 【为什么必须有它】
+ *   用户原话：「30日强势补位的票为什么没有显示完整数据，五日趋势图几乎是空白，只有当天三个数据，
+ *   其余都没数据……我之前要求它获取数据的标准和20日强势补位一样，20日的强势补位票是放到worker中的，
+ *   和同花顺最近多板源股票一起获取数据，这样就是消耗同一个额度……30日的是不是这个逻辑」
+ *
+ *   审查结论：**不是**。`fetchAndWriteWatchlist` 的组B 只读了 `readRange20TopForDate` 并把
+ *   `range20Stocks` 并入 `constituents`；30 日榜从头到尾没进过 9:25 抓取名单 ⇒
+ *     · 30天补位票当天在 `market_metrics` 【无行】⇒ 竞价量比整列 `-`（猫抓只给名单内的票）；
+ *     · 展示日那一格只能靠前端 `trend-patch.js` 用腾讯日线/实时行情补「涨幅/竞价涨幅/昨日量」，
+ *       量比（唯一来源=猫抓，§1 铁律）永远补不上 —— 这正是用户截图里「三个数据 + 两个 -」的形状。
+ *   ⇒ 30 日补位票必须和 20 日补位票走同一条通道：并入 constituents，与最近多板 883410 同批抓取。
+ *
+ * 【⛔ 成本 = 0】猫抓 `daily_auc` 一次请求一批 symbols，额度按【请求次数】算，不按股票数算。
+ *   ⛔ 本函数以及调用方都【不写 auction_watchlist】—— 只并抓取名单，不破坏「当日名单 = 9:25 快照」
+ *   （§6；与打标签/龙头/20日补位同一处理）。
+ *
+ * ⚠️ 与 20 日同一条【结构性一天延迟】：当天榜要等收盘后才算得出来，所以这里读的是
+ *   【前一交易日】的完整榜（截至昨收）。今天才冲进前 N 的票明天 9:25 才会被抓到 —— 这条两边一致，
+ *   用户要的就是「和 20 日同一标准」。
+ *
+ * 🔴 `pct` 是【文本列】⇒ ⛔ 绝不能用 `order=pct.desc`（字典序会把 '8.94' 排在 '78.46' 前面）；
+ *   必须取回后按 Number() 排（与 `readRange20TopForDate` 同一个坑，11-05 实测）。
+ *
+ * ⚠️ 口径：该表目前只有 `leg='close'`（`range30-fill.js` / `compute-range30-pct.mjs` 都只写 close），
+ *   但主键含 leg ⇒ 未来若出现双腿，仍按「close 优先、auc 兜底保留」去重，不混口径、不丢票。
+ *
+ * @returns {Promise<Array<{name:string,pct:number,days:number,leg:string}>>}
+ */
+export async function readRange30TopForDate(env, date, limit) {
+  const n = Number(limit) > 0 ? Math.floor(Number(limit)) : 20;
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range30_pct?date=eq.' +
+    encodeURIComponent(date) + '&select=stock,pct,days,leg&order=stock.asc,leg.asc';
+  // §10 读失败必须抛错，由 9:25 组B 的 settled() 降级并计入 groupBReadFailures，
+  //   ⛔ 不伪装成「前一日 30 日榜为空」（空榜会让 30 天补位票静默全天无量比，正是本轮要修的病）。
+  let data;
+  try {
+    data = await sbGetPaged(env, url);
+  } catch (e) {
+    const msg = (e && e.message) ? e.message : String(e);
+    const http = /HTTP \d+[\s\S]*/.exec(msg);
+    throw new Error('[R30-FETCH] 读取 stock_range30_pct(' + date + ') 失败: ' + (http ? http[0] : msg));
+  }
+  const num = function (v) {
+    if (v === null || v === undefined) return null;
+    const s = String(v).replace('%', '').replace(/,/g, '').trim();
+    if (s === '') return null;
+    const x = Number(s);
+    return isNaN(x) ? null : x;
+  };
+  const byName = new Map();
+  (data || []).forEach(function (r) {
+    const name = (r.stock || '').trim();
+    if (!name) return;
+    const pct = num(r.pct);
+    if (pct === null) return;                       // §10 缺值不得当 0 参与排名
+    const leg = (String(r.leg || 'close').trim().toLowerCase() === 'auc') ? 'auc' : 'close';
+    const cur = byName.get(name);
+    if (!cur) { byName.set(name, { name: name, pct: pct, days: Number(r.days) || 0, leg: leg }); return; }
+    if (cur.leg !== 'close' && leg === 'close') {
+      byName.set(name, { name: name, pct: pct, days: Number(r.days) || 0, leg: leg });
+    }
+  });
+  return Array.from(byName.values())
+    .sort(function (a, b) { return b.pct - a.pct; })
+    .slice(0, n);
+}
+
+// ============================================================================
 // [DAILY-LEGS-CLOUD 2026-11-06] 逐日腿云端补齐（替代本机 08:00 定时任务）
 //   §10：读取失败一律抛错；§32：按 Range 分页，不整表拉爆网关。
 // ============================================================================
@@ -401,6 +503,63 @@ export async function readMarketMetricsForDate(env, date, scope) {
 }
 
 /**
+ * ★★ [R30-METRICS-HEAL 2026-11-23 用户报障「今天不能重补下30日强势补位票的数据吗？也就是那两只」]
+ * 读取「指定日 + 指定股票名」的完整竞价行（九列全套，⛔ 不是只读四要素）。
+ *
+ * 【为什么需要它】
+ *   `readMarketMetricsExtrasForDate` 只 select 四要素 + auc_pct_chg，**判断不了**
+ *   「这一天到底有没有这一只票的行」，更判断不了 volume / change_pct / yest_volume 是否为空。
+ *   而补位票的真实病是【整行都不存在】（百洋股份 11-17~11-20 零行）——
+ *   只补字段的 extras 链路对它完全无效，必须先知道「哪些 (date, stock) 需要新建」。
+ *
+ * 🔴 `stock=in.(...)` 的坑（2026-11-23 实测）：⛔ 不能把整段 `("A","B")` 交给
+ *   encodeURIComponent —— 引号被转成 %22 后 PostgREST 直接回 `PGRST125 Invalid path`。
+ *   股票名里没有逗号，逐个名字 encode 后裸拼即可。
+ *
+ * §10：读失败一律抛错（⛔ 不许返回 []）—— 空数组会被上游误判成「这一天没有行」而重复新建。
+ *
+ * @returns {Promise<Array<{name:string, code:string, volume:string, yest_volume:string,
+ *   change_pct:string, auc_pct_chg:string, um_vol:string, open_bid_pct:string,
+ *   auc_vol_ratio:string, auc_turnover:string}>>}
+ */
+export async function readMarketMetricsRowsForDate(env, date, names) {
+  const uniq = Array.from(new Set((names || []).map(s => String(s || '').trim()).filter(Boolean)));
+  if (uniq.length === 0) return [];
+  const cols = 'stock,code,volume,yest_volume,change_pct,auc_pct_chg,um_vol,open_bid_pct,auc_vol_ratio,auc_turnover';
+  const s = v => (v === undefined || v === null ? '' : String(v));
+  const out = [];
+  const CHUNK = 40;          // 与 readDailyLegsForStocks 同一分片，控制 URL 长度
+  for (let i = 0; i < uniq.length; i += CHUNK) {
+    const chunk = uniq.slice(i, i + CHUNK);
+    const inVal = '(' + chunk.map(n => encodeURIComponent(n)).join(',') + ')';
+    const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?date=eq.' + encodeURIComponent(date) +
+      '&scope=eq.auction' +
+      '&stock=in.' + inVal +
+      '&select=' + cols +
+      // Range 分页（sbGetPaged）必须有确定性顺序，否则跨页可能重复/漏行（§32）
+      '&order=stock.asc';
+    const data = await sbGetPaged(env, url);
+    (data || []).forEach(function (r) {
+      const name = (r.stock || '').trim();
+      if (!name) return;
+      out.push({
+        name: name,
+        code: (r.code || '').trim(),
+        volume: s(r.volume),
+        yest_volume: s(r.yest_volume),
+        change_pct: s(r.change_pct),
+        auc_pct_chg: s(r.auc_pct_chg),
+        um_vol: s(r.um_vol),
+        open_bid_pct: s(r.open_bid_pct),
+        auc_vol_ratio: s(r.auc_vol_ratio),
+        auc_turnover: s(r.auc_turnover)
+      });
+    });
+  }
+  return out;
+}
+
+/**
  * [EXTRAS-PATCH 2026-09-11] 读取某日 market_metrics 竞价行的「竞价四要素 + 竞价涨幅」现状。
  * 供 runAuctionExtrasPatch 判断哪些行还缺字段 —— 只补缺失的，不重复写已有值（幂等）。
  * ⚠️ 读取失败必须抛错（§10：读取失败 ≠ 空数据）：否则会把「读不到」误判成「全都缺」，
@@ -437,9 +596,16 @@ export async function readMarketMetricsExtrasForDate(env, date) {
  * ⚠️ 读取失败必须抛错（§10：读取失败 ≠ 空数据）：否则会把「读不到」误判成「全都缺」。
  */
 export async function readMarketMetricsSnapshotFieldsForDate(env, date) {
+  // ★ [RATIO-HEAL-FULLFIELDS 2026-11-19] select 从「快照三字段」扩到 FULL_FIELDS 全集：
+  //   9:26/9:27 猫抓补缺（ladder-recheck.js#fillAucFromNumcat）的 ratioOnly 路径需要知道
+  //   已有行的 yest_volume / change_pct / um_vol / open_bid_pct 是否为空 —— 空 ⇒ 猫抓整行值
+  //   可以只填空补上（§11 只填空不覆盖）；不知道就永远只补 auc_vol_ratio 一列，
+  //   11-19 事故里 yest_volume / change_pct 全空却无人补（见 ladder-recheck.js 文件头）。
+  //   ⚠️ 纯增量字段：其余两个调用方（extras-workflow / morning-workflow#repairOutOfRangeAucPct）
+  //      只读 code / volume / auc_pct_chg，多返回字段不影响它们（§11 默认无行为）。
   const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?date=eq.' + encodeURIComponent(date) +
     '&scope=eq.auction' +
-    '&select=stock,code,auc_pct_chg,auc_vol_ratio,auc_turnover,volume&limit=2000';
+    '&select=stock,code,volume,yest_volume,change_pct,auc_pct_chg,um_vol,open_bid_pct,auc_vol_ratio,auc_turnover&limit=2000';
   const resp = await sbFetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
@@ -450,10 +616,14 @@ export async function readMarketMetricsSnapshotFieldsForDate(env, date) {
   return (data || []).map(r => ({
     name: (r.stock || '').trim(),
     code: (r.code || '').trim(),
+    volume: pick(r.volume),
+    yest_volume: pick(r.yest_volume),
+    change_pct: pick(r.change_pct),
     auc_pct_chg: pick(r.auc_pct_chg),
+    um_vol: pick(r.um_vol),
+    open_bid_pct: pick(r.open_bid_pct),
     auc_vol_ratio: pick(r.auc_vol_ratio),
-    auc_turnover: pick(r.auc_turnover),
-    volume: pick(r.volume)
+    auc_turnover: pick(r.auc_turnover)
   })).filter(r => r.name);
 }
 
@@ -993,3 +1163,4 @@ export async function upsertLeaderDivergeRows(env, rows) {
   await upsertBucketed(env, 'tvrb_leader_diverge',
     CONFIG.SUPABASE_URL + '/rest/v1/tvrb_leader_diverge?on_conflict=date,stock', rows);
 }
+

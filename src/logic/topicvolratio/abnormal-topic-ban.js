@@ -34,10 +34,15 @@
 
 import { splitTopicSegments } from '../topic/core-category.js';
 import {
-  ABNORMAL_RULE_NO, TVRB_RANGE10_CAP, ABNORMAL_TOPIC_BAN_DAY_OFFSET,
+  ABNORMAL_RULE_NO, ABNORMAL_TOPIC_BAN_DAY_OFFSET,
   ABNORMAL_TOPIC_BAN_TAG, TVRB_ABNORMAL_TOPIC_BAN_NONE
 } from './tvrb-constants.js';
-import { isOverRange10Cap } from './abnormal-10d.js';
+// ★★ [DEV-RULE 2026-11-25] 口径换成官方偏离值：异动日 = 「D-2 有主板票收盘偏离越官方红线」，
+//   ⛔ 旧 `isOverRange10Cap`（十日涨幅 > 97%）已废除。判据/文案都走同一份纯函数（§6）。
+import { isOverOfficialRedLine, devPctText } from './abnormal-10d.js';
+import {
+  DEV_OFFICIAL_RED_LINE_10D, DEV_OFFICIAL_RED_LINE_30D
+} from '../auction/deviation-rule-facts.js';
 
 /** 把若干来源的题材段合并去重（大小写不敏感去重，保留首次出现的原始写法与顺序） */
 function _mergeSegments(lists) {
@@ -128,7 +133,14 @@ export function buildAbnormalTopicBan(input) {
   const todayDate = String(i.todayDate || '').trim();
   const pctN = Number(String(i.leaderPct === null || i.leaderPct === undefined ? '' : i.leaderPct)
     .replace('%', '').trim());
-  const pctText = String(i.todayPctText || '').trim() || (isFinite(pctN) ? (pctN > 0 ? '+' : '') + pctN.toFixed(2) + '%' : '—');
+  // ★★ [DEV-RULE 2026-11-25] 官方口径：`leaderDev` = 异动日那只票的偏离事实（收盘口径）。
+  //   `leaderPct`（十日涨幅）**只留作历史调用方兼容，⛔ 不再参与判定**。
+  const dev = i.leaderDev || null;
+  // ⚠️ 两件事分开：`pctText` 是**兼容字段**（老调用方只给了十日涨幅时要能显示那个数）；
+  //   `devText` 是**官方口径的偏离值文本**，没有就写 '—'（⛔ 不许拿十日涨幅冒充偏离值）。
+  const devTextRaw = dev ? devPctText(dev.dev10) : String(i.leaderDevText || '').trim();
+  const pctText = devTextRaw || (isFinite(pctN) ? (pctN > 0 ? '+' : '') + pctN.toFixed(2) + '%' : '—');
+  const devText = devTextRaw || '—';
 
   const noteTopics = _mergeSegments([i.noteTopics]);
   const libTopics = _mergeSegments([i.libTopics]);
@@ -137,11 +149,16 @@ export function buildAbnormalTopicBan(input) {
   // ① 不是第三天 ⇒ 稳定 NONE（§19：同一引用，不触发下游重算）
   if (off !== ABNORMAL_TOPIC_BAN_DAY_OFFSET) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
 
-  // ①-b ★ 触发线自检：调用方给了【具体数值】就必须自己先过线，否则本条不生效。
+  // ①-b ★ 触发线自检：调用方给了【偏离事实】就必须自己先过线，否则本条不生效。
   //   为什么放在本模块而不是只靠调用方：这条判据一旦被调用方漏掉，就会出现
   //   「D-2 根本没异动、今天却被禁买」这种**反向错误**（比漏禁更坏 —— 会白白错过买点）。
-  //   ⚠️ 只在给到有限数字时校验；null（没读到）⇒ 交给下面的 unknown 分支如实交代（§10）。
-  if (isFinite(pctN) && !isOverRange10Cap(pctN)) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
+  //   ★ [DEV-RULE 2026-11-25] 判据从「十日涨幅 > 97%」换成「官方严重异常波动」；
+  //     `leaderDev` 没给（undefined）⇒ 跳过自检，交给下面的 unknown 分支如实交代（§10）。
+  if (dev && !isOverOfficialRedLine(dev)) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
+  if (!dev && isFinite(pctN) && pctN <= DEV_OFFICIAL_RED_LINE_10D) {
+    // 老调用方还在传十日涨幅 ⇒ 只做「明显没到线」的粗筛（不精确，仅防止反向误禁）
+    return TVRB_ABNORMAL_TOPIC_BAN_NONE;
+  }
 
   const base = {
     active: false,
@@ -150,7 +167,9 @@ export function buildAbnormalTopicBan(input) {
     triggerDate: triggerDate,
     todayDate: todayDate,
     leaderName: leaderName,
-    leaderPctText: pctText,
+    leaderPctText: pctText,            // 兼容字段（= 偏离值文本）
+    leaderDevText: devText,             // ★ 官方口径：10日偏离文本
+    leaderDev30Text: dev ? devPctText(dev.dev30) : (String(i.leaderDev30Text || '').trim() || '—'),
     segments: Object.freeze(segments),
     noteTopics: Object.freeze(noteTopics),
     libTopics: Object.freeze(libTopics),
@@ -171,8 +190,8 @@ export function buildAbnormalTopicBan(input) {
     return Object.assign(base, {
       unknown: true,
       detail: '⚠️【第' + ABNORMAL_RULE_NO + '条 · 延伸】今天是【' + (triggerDate || '异动日') + '】' +
-        '之后的【第三天】（异动日：' + leaderName + ' 十日涨幅 ' + pctText + ' ＞ ' + TVRB_RANGE10_CAP +
-        '%），但读不到它的细分题材（当日竞价名单 note 为空、题材库也没有这只票）' +
+        '之后的【第三天】（异动日：' + leaderName + ' 10日偏离 ' + devText + ' 已越官方红线 +' +
+        DEV_OFFICIAL_RED_LINE_10D + '%），但读不到它的细分题材（当日竞价名单 note 为空、题材库也没有这只票）' +
         '⇒ 本条【判不出要禁哪些题材】，买点侧不做同题材剔除（§10：判不出 ≠ 没有同题材）。'
     });
   }
@@ -191,7 +210,8 @@ export function buildAbnormalTopicBanNotice(ban, hitNames) {
   if (!ban || (ban.active !== true && ban.unknown !== true)) return { headline: '', detail: '' };
   const seg = (Array.isArray(ban.segments) ? ban.segments : []).join('、');
   const trig = '【' + (ban.triggerDate || '异动日') + '】' + (ban.leaderName || '—') +
-    ' 十日涨幅（9:26 竞价口径）' + (ban.leaderPctText || '—') + ' ＞ ' + TVRB_RANGE10_CAP + '%';
+    ' 10日偏离 ' + (ban.leaderDevText || ban.leaderPctText || '—') + ' 已越官方「严重异常波动」红线（+' +
+    DEV_OFFICIAL_RED_LINE_10D + '% / 30日 +' + DEV_OFFICIAL_RED_LINE_30D + '%）';
 
   if (ban.unknown === true) return { headline: '⚠️ 异动第三天 · 同题材监控【判不出】', detail: ban.detail };
 

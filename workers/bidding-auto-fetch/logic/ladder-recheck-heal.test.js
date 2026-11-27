@@ -9,7 +9,8 @@
 //   ① 9:25 名单足量（skipped）路径也必须检查并补「当日已有行但缺量比」的票；
 //   ② 只发 1 次猫抓请求、只补缺的那只（§32 不重复请求）；
 //   ③ 9:25 全抓全时 0 请求、0 额度；
-//   ④ 补写只带 auc_vol_ratio 一列，⛔ 不覆盖已有字段（§11）。
+//   ④ 补写只带「量比 + 行内为空字段」，已有值绝不出现在 payload（§11 只填空）；
+//   ⑤ [WL-CANDIDATES 2026-11-19] metrics 0 行时正式名单照样进补抓（11-19 空转事故锁）。
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const state = vi.hoisted(() => ({
@@ -87,24 +88,33 @@ describe('[RANGE20-RATIO-HEAL] 9:26 skipped 路径也必须补竞价量比', () 
     const out = await runLadderRecheck({}, { today: TODAY, logs });
 
     expect(out.skipped).toBe(true);                       // 没有重查 883410
-    expect(state.numcatCalls).toEqual(['001219']);        // ★ 只补缺的那只，整轮 1 次请求
+    expect(state.numcatCalls).toHaveLength(1);            // ★ 整轮仍然只发 1 次请求（§32）
+    // [WL-CANDIDATES 2026-11-19] 名单 30 只（metrics 没有它们的行）也在这一次请求里
+    const syms = state.numcatCalls[0].split(',');
+    expect(syms).toContain('001219');
+    expect(syms).toHaveLength(31);
     expect(out.auc.attempted).toBe(true);
+    // 猫抓只回了 001219 ⇒ 名单成员拿不到值 ⇒ 一行不写（§10 宁缺勿错），只写青岛食品
     expect(out.auc.written).toBe(1);
     expect(state.upserts).toHaveLength(1);
     const row = state.upserts[0][0];
     expect(row.stock).toBe('青岛食品');
     expect(row.auc_vol_ratio).toBe('1.85');
-    // §11：只带量比一列，⛔ 不把已有 auc_pct_chg / volume 抹掉
+    // §11：已有行快照里 auc_pct_chg / volume / auc_turnover 都有值 ⇒ 不出现在 payload；
+    //      猫抓给了 change_pct（今日竞价副本口径）⇒ 行内为空 ⇒ 可以补；
+    //      猫抓没给 yest_volume（fields 里没有）⇒ 不出现
     expect(Object.keys(row).sort()).toEqual(
-      ['auc_vol_ratio', 'date', 'scope', 'stock', 'updated_at', 'updated_by'].sort()
+      ['auc_vol_ratio', 'change_pct', 'date', 'scope', 'stock', 'updated_at', 'updated_by'].sort()
     );
   });
 
   it('★★ 9:25 全抓全 ⇒ 名单足量路径 0 次猫抓请求、0 额度（§32）', async () => {
-    state.metrics = [
-      { name: '海洋王', code: '002724', auc_vol_ratio: '1.94' },
-      { name: '青岛食品', code: '001219', auc_vol_ratio: '1.85' },
-    ];
+    // 全抓全 = 名单成员在 metrics 里都有行且都有量比（11-19 前的 mock 缺这层 ⇒ 误伤新候选源）
+    state.metrics = state.watchlist.map(w => ({ name: w.name, code: w.code, auc_vol_ratio: '1.00' }))
+      .concat([
+        { name: '海洋王', code: '002724', auc_vol_ratio: '1.94' },
+        { name: '青岛食品', code: '001219', auc_vol_ratio: '1.85' },
+      ]);
     const logs = [];
     const out = await runLadderRecheck({}, { today: TODAY, logs });
 
@@ -113,6 +123,30 @@ describe('[RANGE20-RATIO-HEAL] 9:26 skipped 路径也必须补竞价量比', () 
     expect(out.auc.attempted).toBe(false);
     expect(out.auc.skipped).toContain('0 次猫抓请求');
     expect(state.upserts).toHaveLength(0);
+  });
+
+  // ★★ [WL-CANDIDATES 2026-11-19] 11-19 事故原型（端到端锁）：
+  //   morning 猫抓 403 ⇒ metrics 当日 0 行 + 883410 残缺 ⇒ 旧实现 symbols=0 谎报「量比齐全」；
+  //   新实现用正式名单做候选 ⇒ 1 次猫抓把 30 只成员整行补上。
+  it('★★ 11-19 原型：metrics 0 行 ⇒ 正式名单候选整行补抓（source=worker）', async () => {
+    state.metrics = [];   // morning 全灭
+    state.numcatPayload = numcatOf(
+      state.watchlist.map(w => ({ code: w.code, ratio: '2.00', vol: 15000, pct: '+1.00' }))
+    );
+    const logs = [];
+    const out = await runLadderRecheck({}, { today: TODAY, logs });
+
+    expect(state.numcatCalls).toHaveLength(1);
+    expect(state.numcatCalls[0].split(',')).toHaveLength(30);
+    expect(out.auc.attempted).toBe(true);
+    expect(out.auc.written).toBe(30);
+    expect(state.upserts).toHaveLength(1);
+    const row0 = state.upserts[0][0];
+    expect(row0.source).toBe('worker');
+    expect(row0.scope).toBe('auction');
+    expect(row0.auc_vol_ratio).toBe('2.00');
+    // 日志必须如实（⛔ 不许再出现「量比齐全」的假话）
+    expect(logs.join('\n')).not.toContain('量比齐全');
   });
 
   it('当日 market_metrics 读取失败 ⇒ 停止补抓，⛔ 不把读失败当空表（§10）', async () => {

@@ -17,7 +17,7 @@ import { saveData, getTodayGroupList, getGroupData, patchAuctionField, patchAuct
 import { getAuctionStockHistory, deriveAuctionTagState } from '../logic/tagTitles/rules.js';
 import { hydrateStockHistoryRow } from '../data/watchlist-and-metrics.js';
 import { getStockHistoryValue } from '../data/watchlist-and-metrics.js';
-import { getTopicGroups, getTopicRankCountThisWeek, isPseudoTopic } from '../logic/topic/rules.js';
+import { getTopicGroups, getTopicRankCountThisWeek, isPseudoTopic, getHiddenTopicTokensForDate } from '../logic/topic/rules.js';
 import { getDisplayNote, parseNoteToFields, extractTopics } from '../logic/note/helpers.js';
 import { getPreviousTradingDay, isTradingDay } from '../logic/date/trading-day-helpers.js';
 import { getHighRatioStocksForDate, getJingYestHighlightSetForDate, getParallelStocksForDate } from '../logic/auction/sort-rules.js';
@@ -2011,7 +2011,8 @@ export function useAuctionBoard() {
     volumeNoteStock = t.name;
     volumeNoteRow = t.display;  // 内存行优先（刷新后还在的那一份）；纯壳注入行才退化成视图行
     // 编辑框内容与黑色 toast 同步：补全题材、统一英文标点（双向同步：保存后 toast 也显示同一格式）
-    volumeNoteDraft.value = _buildFullNoteWithTopics(t.display, getDisplayNote(t.display));
+    // [TEMP-CORE-SCOPE 2026-11-27] 传本行所属交易日：非生效日的临时题材不在这里出现。
+    volumeNoteDraft.value = _buildFullNoteWithTopics(t.display, getDisplayNote(t.display), uiStore.currentDate);
     volumeNoteModalActive.value = true;
   }
 
@@ -2062,6 +2063,23 @@ export function useAuctionBoard() {
     const isFormalRow = t.isFormal;
     const parsed = parseNoteToFields(normalizedNote);
     const topicsArr = extractTopics(normalizedNote);
+    // ★★ [TEMP-CORE-SCOPE 2026-11-27] 备注框显示时按日期隔离掉的临时词，写库前必须补回去：
+    //   显示隔离 ≠ 数据删除（§11）。若直接按被过滤过的草稿写库，会把「别的日期仍在生效」的
+    //   临时词从 stock_topics（一票一行、跨日期共享）与其它日期的 topics 列里一起抹掉。
+    //   ⇒ 写库/跨日期同步用「草稿 ∪ 原行本就有的、当日被隔离的临时词」；
+    //     当日 note 文本仍用用户看到的草稿（已隔离）。
+    const __hiddenNow = getHiddenTopicTokensForDate(uiStore.currentDate);
+    if (__hiddenNow.size > 0) {
+      let __merged = false;
+      extractTopics(getDisplayNote(item)).forEach(function(t) {
+        const k = String(t == null ? '' : t).trim().toLowerCase();
+        if (!k || !__hiddenNow.has(k)) return;
+        if (topicsArr.some(function(x) { return String(x).trim().toLowerCase() === k; })) return;
+        topicsArr.push(String(t).trim());
+        __merged = true;
+      });
+      if (__merged) parsed.topics = topicsArr.join(',');
+    }
     const topicsStr = topicsArr.join(',');
 
     // 旧值快照：云端写失败时回滚本地显示，避免留下「界面已改、云端没改」的假成功（§10）
@@ -2198,7 +2216,8 @@ export function useAuctionBoard() {
   function onYestClick(item, event) {
     if (!item) return;
     // [FIX 2026-08-16] 与编辑框同一口径：统一英文标点 + 题材补全（共享 _buildFullNoteWithTopics）
-    const note = _buildFullNoteWithTopics(item, getDisplayNote(item));
+    // [TEMP-CORE-SCOPE 2026-11-27] 同样传本行所属交易日（非生效日的临时题材不显示）
+    const note = _buildFullNoteWithTopics(item, getDisplayNote(item), uiStore.currentDate);
     if (!note.trim()) return;
     // 已显示同一行 → 点击关闭（切换）
     if (notePopup.value && notePopupText.value === note) { closeNotePopup(); return; }

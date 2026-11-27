@@ -55,6 +55,17 @@ const FUYAO_OFF = true;
  */
 const SNAPSHOT_ONLY_PATH = '/api/a-share/auction/snapshot';
 
+/**
+ * ★ [KLINE-EMERGENCY 2026-11-19] 第二个受控例外：前复权日线，仅给 `qt-kline.js` 的
+ *   「腾讯 WAF + 东财限流」双失败兜底用。
+ *   现场：11-19 腾讯两个 host 同日被拦（501/ERR_FAILED）、东财突发 burst 后 11/31 票
+ *   全部失败 ⇒ 昨成交量整列补不齐。同花顺历史 K 线实测仍 200、15 根 bar，
+ *   与腾讯/东财量纲一致（世龙实业 11-18：24,625,767 股 ≈ 246,258 手）。
+ *   ⛔ 与快照放行同款三道闸门：路径精确相等 + 显式 allowWhenOff + timeoutMs > 0；
+ *      其余 16 个调用点行为逐字不变，FUYAO_OFF 总闸不打开。
+ */
+const HISTORY_ONLY_PATH = '/api/a-share/prices/historical';
+
 /** 同花顺通道当前是否已停用（供 Logic 层判断「还要不要排 K 线补算」） */
 export function isFuyaoOff() {
     return FUYAO_OFF;
@@ -77,13 +88,19 @@ export async function fuyaoApiGet(path, params, opts) {
     const _snapshotBypass = !!(_o.allowWhenOff) &&
         String(path || '') === SNAPSHOT_ONLY_PATH &&
         Number(_o.timeoutMs) > 0;
+    const _historyBypass = !!(_o.allowWhenOff) &&
+        String(path || '') === HISTORY_ONLY_PATH &&
+        Number(_o.timeoutMs) > 0;
     // [FUYAO-OFF] 见文件头。⛔ 必须放在 new URL 之前 —— 连构造请求都不做，一点网络都不产生。
-    if (FUYAO_OFF && !_snapshotBypass) {
+    if (FUYAO_OFF && !_snapshotBypass && !_historyBypass) {
         _dbgLog('[FUYAO-OFF] 已停用同花顺通道，跳过请求: ' + path);
         throw new Error('同花顺通道已临时停用（上游不可用，见 data/api/fuyao-proxy.js 的 FUYAO-OFF）');
     }
     if (FUYAO_OFF && _snapshotBypass) {
         _dbgLog('[FUYAO-SNAPSHOT] 受控放行竞价快照（timeoutMs=' + _o.timeoutMs + '）');
+    }
+    if (FUYAO_OFF && _historyBypass) {
+        _dbgLog('[FUYAO-KLINE] 受控放行前复权日线兜底（timeoutMs=' + _o.timeoutMs + '）');
     }
     const url = new URL(FUYAO_PROXY_BASE);
     url.searchParams.set('path', path);
