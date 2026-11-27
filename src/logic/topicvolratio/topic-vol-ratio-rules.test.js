@@ -127,7 +127,7 @@ import {
 // ★★ [CORE-CAT 2026-10-22] 「题材 → 核心词大类」归一的唯一实现（文化传媒 ⇒ AI应用）
 import { makeCoreTopicResolver } from '../topic/core-category.js';
 // ★★ [EBB-TOPIC-MEMBER 2026-11-27] 退潮题材【票级】判据（第二十条粒度细化）的唯一实现
-import { makeEbbTopicBan } from './tvrb-utils.js';
+import { makeEbbTopicBan, ebbBanTopicsOf } from './tvrb-utils.js';
 // ★ [EBB-TOPIC-MEMBER 2026-11-27] 退潮题材字段级灰化的区别标签
 import { EBB_TOPIC_BAN_TAG } from './tvrb-constants.js';
 // ★ [AUCTION-YIZI-UNIFY 2026-11-16] 一字标签唯一来源（断言必须比对常量，⛔ 不写字面量）
@@ -5821,5 +5821,120 @@ describe('tvrb · makeEbbTopicBan 票级认亲（§6 纯函数）', function() {
     expect(ban.test('九阳股份')).toBe(true);          // 题材串 = 家电 ⇒ 归一成 大消费
     expect(ban.test('日出东方')).toBe(true);          // 家电,热泵,东方 里也有 家电
     expect(ban.test('北纬科技')).toBe(false);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [EBB-TOPIC-TEMP 2026-11-27 用户口径] 二次确认退潮的【禁买词集合】取材：
+//   总龙原有题材（经核心词归一大类，同义词一并牵连）∪ 当日生效且【总龙自己也沾】的临时题材词。
+//   11-16 真库形状：`leader_topic = 水产品`（归一 = 农业）；临时词「东方」11-12~11-16 生效；
+//   「羊字辈」11-18 才建 ⇒ 11-16 不该牵连。
+// ══════════════════════════════════════════════════════════════════════════════════════
+describe('tvrb · [EBB-TOPIC-TEMP] 退潮禁买集合 = 原有题材 + 临时题材牵连', function() {
+  // 真实库题材串（2026-11-27 取证）
+  const TOPICS = {
+    '东方海洋': '水产品,农业,东方,羊字辈',
+    '日出东方': '家电,热泵,东方',
+    '百洋股份': '水产品',
+    '九阳股份': '家电',
+    '家三': '家电',
+    '家四': '家电',
+    '北纬科技': '游戏,通信',
+    '甲一': 'AI应用', '甲二': 'AI应用', '甲三': 'AI应用', '甲四': 'AI应用',
+    '甲五': 'AI应用', '甲六': 'AI应用', '甲七': 'AI应用', '甲八': 'AI应用'
+  };
+  function topicsOf(name) { return TOPICS[String(name === null || name === undefined ? '' : name).trim()] || ''; }
+  // 用户口径「要牵连到大类的」：水产品 是 农业 的同义词 ⇒ 归一后同一把尺子
+  const CORE = [{ name: '农业', synonyms: ['水产品'] }, { name: '大消费', synonyms: ['家电'] }];
+  function ebbCtx() {
+    return {
+      ready: true,
+      leader: { name: '东方海洋', pct: 130, topic: '水产品', code: '002086', rank: 1, isYizi: false },
+      leaderSuspended: false,
+      leaderShare: 3.3,          // ＜ 龙头门槛 3.5% ⇒ 判据②（占比不达标）
+      siblingDragons: [],
+      secondInfo: null,
+      prevLeader: null,
+      buyPicks: [],
+      buyTrail: []
+    };
+  }
+  /** 近 10 天已有一次「农业（水产品）」退潮事件 ⇒ 今天 = 二次确认 */
+  const HIST = [{ date: '2026-11-10', prevDate: '2026-11-09', leaderStock: '东方海洋', leaderTopic: '农业', ebb: true }];
+  function bigTopic(members) {
+    return block('大消费', 1, members.map(function(n, i) {
+      return m(n, { aucVolRatio: 60 - i, aucShare: 6, code: '6000' + (i + 1) });
+    }));
+  }
+  function aiTopic() {
+    return block('AI应用', 2, ['北纬科技', '甲一', '甲二', '甲三', '甲四', '甲五', '甲六', '甲七', '甲八']
+      .map(function(n, i) { return m(n, { aucVolRatio: 50 - i, aucShare: 6, code: '6010' + (i + 1) }); }));
+  }
+
+  it('★ 11-16：原有题材「水产品(→农业)」+ 临时题材「东方」⇒ 日出东方灰化、北纬科技照买', function() {
+    const dm = dragonMap([['日出东方', 1], ['九阳股份', 2], ['北纬科技', 1], ['甲一', 2]]);
+    const p = buildTopicVolRatioPlan([bigTopic(['日出东方', '九阳股份', '家三', '家四']), aiTopic()], dm, {
+      ebbCtx: ebbCtx(), ebbHistory: HIST, stockTopicsOf: topicsOf, coreTopics: CORE,
+      tempTopicTokens: ['东方']            // 11-16 生效中的临时词（羊字辈 11-18 才建，不在此列）
+    });
+    expect(p.ebb.phase).toBe('second');
+    // 常规选股结论一个字都不改：大消费仍入选、仍选日出东方
+    expect(p.blocks.map(function(b) { return b.topic; })).toEqual(['大消费', 'AI应用']);
+    const big = p.blocks[0];
+    expect(big.count).toBe(4);
+    expect(big.picks.map(function(x) { return x.name; })).toEqual(['日出东方']);
+    // 票级命中「东方」（临时题材牵连）⇒ 灰块 + 标签
+    expect(big.ebbTopicGray).toBe(true);
+    const pick = big.picks[0];
+    expect(pick.buyActionTag).toBe(EBB_TOPIC_BAN_TAG);
+    expect(pick.ebbTopicBlocked).toBe(true);
+    expect(pick.actionNote).toContain('家电,热泵,东方');
+    expect(pick.actionNote).toContain('临时题材');   // 必须说明「东方」是被临时题材牵连进来的
+    expect(p.buyNames.has('日出东方')).toBe(false);
+    expect(p.buyNames.has('北纬科技')).toBe(true);
+    // 提示板必须点名两个来源，且题材说【大类】（水产品 ⇒ 农业，用户「提就要提核心词」）
+    const all = p.notes.join('\n');
+    expect(all).toContain('退潮题材【农业、东方】');
+    expect(all).toContain('临时题材【东方】');
+  });
+
+  it('★ 临时词不生效（羊字辈 11-18 才建 / 已过期）⇒ 不牵连：同样那批票不灰', function() {
+    const dm = dragonMap([['日出东方', 1], ['九阳股份', 2]]);
+    const p = buildTopicVolRatioPlan([bigTopic(['日出东方', '九阳股份', '家三', '家四'])], dm, {
+      ebbCtx: ebbCtx(), ebbHistory: HIST, stockTopicsOf: topicsOf, coreTopics: CORE,
+      tempTopicTokens: []                    // 当天没有任何生效的临时词
+    });
+    expect(p.ebb.phase).toBe('second');
+    expect(!!p.blocks[0].ebbTopicGray).toBe(false);
+    expect(p.blocks[0].picks[0].buyActionTag).not.toBe(EBB_TOPIC_BAN_TAG);
+    expect(p.buyNames.has('日出东方')).toBe(true);
+  });
+
+  it('★ 大类牵连：同义词「水产品」也要灰（用户：核心词农业包含的同义词都灰掉）', function() {
+    const dm = dragonMap([['百洋股份', 1], ['九阳股份', 2]]);
+    const p = buildTopicVolRatioPlan([bigTopic(['百洋股份', '九阳股份', '家三', '家四'])], dm, {
+      ebbCtx: ebbCtx(), ebbHistory: HIST, stockTopicsOf: topicsOf, coreTopics: CORE
+    });
+    const big = p.blocks[0];
+    expect(big.picks.map(function(x) { return x.name; })).toEqual(['百洋股份']);
+    expect(big.ebbTopicGray).toBe(true);
+    expect(big.picks[0].buyActionTag).toBe(EBB_TOPIC_BAN_TAG);
+    expect(p.buyNames.has('百洋股份')).toBe(false);
+  });
+
+  it('★ ebbBanTopicsOf 取词：只收「总龙自己也沾」的临时词（§10 不牵连）', function() {
+    const res = makeCoreTopicResolver(CORE);
+    const a = ebbBanTopicsOf('水产品', '水产品,农业,东方,羊字辈', ['东方'], res);
+    expect(a.topics).toEqual(['水产品', '东方']);
+    expect(a.tempTopics).toEqual(['东方']);
+    // 总龙不沾 ⇒ 不进集合
+    const b = ebbBanTopicsOf('水产品', '水产品,农业', ['东方', '羊字辈'], res);
+    expect(b.topics).toEqual(['水产品']);
+    expect(b.tempTopics).toEqual([]);
+    // 判不出（没有总龙题材串 / 没有临时词）⇒ 只按原有题材，⛔ 不炸、不乱杀
+    expect(ebbBanTopicsOf('水产品', '', ['东方'], res).topics).toEqual(['水产品']);
+    expect(ebbBanTopicsOf('水产品', '水产品,东方', null, res).tempTopics).toEqual([]);
+    // 原有题材为空 ⇒ 只剩临时题材牵连
+    expect(ebbBanTopicsOf('', '水产品,东方', ['东方'], res).topics).toEqual(['东方']);
   });
 });

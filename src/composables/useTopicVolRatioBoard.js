@@ -294,7 +294,7 @@ import { _isAuctionWatchlistIndexReady } from '../data/watchlist-and-metrics.js'
 //   getCoreTopics() = 核心管理里那张表（用户「我在核心管理里把文化传媒放到 AI应用 那个大类了」）；
 //   getCoreTopicsVersion() = 响应式版本号（云端加载完成 / 用户改完核心词 ⇒ computed 自动重算）。
 //   ⛔ 规则层拿到的永远是「数组」而不是「自己去读表」（§5 Data 层职责）。
-import { getCoreTopics, getCoreTopicsForDate, getCoreTopicsVersion, isCoreTopicsCloudLoaded, getHiddenTopicTokensForDate } from '../logic/topic/rules.js';
+import { getCoreTopics, getCoreTopicsForDate, getCoreTopicsVersion, isCoreTopicsCloudLoaded, getHiddenTopicTokensForDate, getTempCoreWindowsForDate } from '../logic/topic/rules.js';
 // [TEMP-CORE-SCOPE 2026-11-27] 老题材取词后按展示日隔离临时词（题材库并集缓存没有日期维度）
 import { filterHiddenTopicText } from '../logic/topic/temp-core-topic.js';
 // [TEMP-CORE 2026-11-17] 临时核心词：只在输入侧按当日换一张词表（规则 〇·a）
@@ -444,6 +444,32 @@ function _tvrbStockTopicsOfDate(date) {
     if (!raw) return raw;
     return _ebbTopicOnDate(date, raw);
   };
+}
+
+/**
+ * ★★ [EBB-TOPIC-TEMP 2026-11-27 用户口径] 展示日【当日生效】的临时题材词（第二十条禁买集合的一半）。
+ *
+ * 用户原话：「你还要看总龙有没有临时题材刚好在这个时间节点建立，如果有那么这个临时题材和票也受到牵连，
+ *   是不能选的……要牵连到大类的，也就是核心词农业包含的同义词都灰掉，不单是题材灰，包含的股票也是要灰的」。
+ * ⇒ 取词走 `getTempCoreWindowsForDate`（ui-bridge 注册的 resolver，与分组层 / 标签层同一个来源，§6）：
+ *   只出【窗口内生效】的临时词 —— 11-16 有「东方」（11-12 设置、3 个交易日），
+ *   11-18 才建的「羊字辈」在 11-16 不会出现。
+ * ⛔ 本函数只回答「当天有哪些临时词」，要不要牵连由规则层 `ebbBanTopicsOf` 判（总龙题材串沾不沾）。
+ *
+ * @param {string} date 展示的交易日
+ * @returns {string[]} 临时词 + 同义词（去重）
+ */
+function _tempTopicTokensOf(date) {
+  const out = [];
+  const push = function(t) {
+    const v = String(t === null || t === undefined ? '' : t).trim();
+    if (v && out.indexOf(v) < 0) out.push(v);
+  };
+  getTempCoreWindowsForDate(date).forEach(function(w) {
+    push(w && w.name);
+    (Array.isArray(w && w.synonyms) ? w.synonyms : []).forEach(push);
+  });
+  return out;
 }
 
 function _tvrbStockTopicsText(name) {
@@ -2378,6 +2404,9 @@ export function useTopicVolRatioBoard() {
         // ★★ [EBB-TOPIC-MEMBER 2026-11-27] 票级题材解析按【展示日】隔离临时题材词：
         //   同一个入口同时喂给 ① 第二十条退潮题材字段级排除 ② 第三十四条·延伸的票级认亲。
         stockTopicsOf: _tvrbStockTopicsOfDate(d),
+        // ★★ [EBB-TOPIC-TEMP 2026-11-27] 当日【生效】的临时题材词：第二十条的禁买集合 =
+        //   总龙原有题材 ∪（这里的词 ∩ 总龙题材串）⇒ 11-16「东方」牵连，日出东方灰化。
+        tempTopicTokens: _tempTopicTokensOf(d),
         // ★★ [DEV-RULE 2026-11-25 用户口径] 官方偏离值事实（规则输入，⛔ 规则层不取数）：
         //   auto   = 自动口径（9:25 竞价 / 收盘）在今天的 Map ⇒ 第三十六条「逼近不买」+ 三十六·b「异动卖」
         //   byDate = 收盘口径的历史日 Map（含上一交易日）⇒ 第三十四条「异动次日」

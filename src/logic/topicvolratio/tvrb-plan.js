@@ -9,7 +9,7 @@
 
 import { TVRB_MIN_COUNT, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_TOP_N, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TVRB_CASH_ALERT_NONE, NEW_DRAGON_TAG, NEW_DRAGON_LOOKBACK_DAYS, NEW_DRAGON_CERTIFY_TOP_N, NEW_DRAGON_FAMILY_MIN_COUNT, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, TVRB_ABNORMAL_NONE, SECOND_TOPIC_VOLWEAK_NO_BUY_TAG, TOP30_HUDDLE_RULE_NO, TOP30_HUDDLE_TAG, EBB_SECOND_RULE_NO, EBB_TOPIC_BAN_TAG } from './tvrb-constants.js';
 import { pickFamilyNewDragon, splitTopicSegs, isLineageTopic } from './new-dragon-family.js';
-import { _normTopic, _sameTopicLoose, makeEbbTopicBan, _num, _pct2, _streakWord, _secondTopicLeaderInTop10, _range10RankMapOf, _closeRankOf, _rankTopEntries, _topicTop10Hits, _windowTextOf, _todayRankPhrase, _rankLabelOf, _oldTopicNameOf, _oldTopicBasisOf, _isBuyablePick } from './tvrb-utils.js';
+import { _normTopic, _sameTopicLoose, makeEbbTopicBan, ebbBanTopicsOf, _num, _pct2, _streakWord, _secondTopicLeaderInTop10, _range10RankMapOf, _closeRankOf, _rankTopEntries, _topicTop10Hits, _windowTextOf, _todayRankPhrase, _rankLabelOf, _oldTopicNameOf, _oldTopicBasisOf, _isBuyablePick } from './tvrb-utils.js';
 import { detectEbbDay, secondEbbTopicOfPrevDay, buildEbbDayRecord } from './tvrb-ebb.js';
 import { _applyPrevEbbSecondNoBuy, _applyLeaderLimitDownNoBuy, _applySecondTopicVolWeakNoBuy, _applyEbbSellRules, _buildEbbPicksBlock, _applyEbbBuyRules, _applyCashAlertBuyRules, _applyDivergeNoBuyRules, _applyAbnormalNoBuyRules, _buildDivergeBuyBlock, _buildDivergeCashAlert, _buildWeakHuddleBlock, _buildLeaderLimitDownHuddleBlock, _buildCatchUpBlock, _buildTop30HuddleBlock, resolveTvrbTier, avgVolRatioOf, formatAvgVolRatio, buildCashAlert, _dragonCandidates, _buildBlock, _buildNewDragonBlock, _withAuctionLegPct, _buildRange10BackupBlock, _applyAbnormalTopicBan, _applyEbbTopicBan } from './tvrb-blocks.js';
 // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条「监管异动 · 十日涨幅硬上限」的事实判定
@@ -1006,11 +1006,32 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //      只在选完之后多判一次：这只票的题材串里若有退潮题材字段 ⇒ 该块灰化 + 该行标签改
   //      【退潮题材不选】+ 行内说明写明原因（照第三十四条·延伸的收口范式，写在 `_applyEbbTopicBan`）。
   //   ⚠️ 平均竞价量比 / 档位 / 候选顺延 / 别的题材全部不受影响。
-  const ebbTopicBan = ebbSecondTopic
-    ? makeEbbTopicBan([ebbSecondTopic], o.stockTopicsOf, coreRes) : null;
+  //
+  //   ★★ [EBB-TOPIC-TEMP 2026-11-27 第三次更正] 禁买词【不止落库那一个题材】——
+  //      用户原话：「二次确认退潮你看总龙原来是什么题材……还有一点，你还要看总龙有没有临时题材刚好在
+  //      这个时间节点建立，如果有那么这个临时题材和票也受到牵连，是不能选的……要牵连到大类的，
+  //      也就是核心词农业包含的同义词都灰掉，不单是题材灰，包含的股票也是要灰的。」
+  //   ⇒ 集合 = 总龙原有题材（`ebb.leaderTopic`，归一大类）∪ 当日生效且【总龙自己也沾】的临时题材词。
+  //      11-16 实测：落库题材「水产品」→农业 + 临时词「东方」（11-12~11-16 生效）⇒ {农业, 东方}
+  //      ⇒ 日出东方（家电,热泵,东方）命中「东方」⇒ 灰；北纬科技（游戏,通信）不命中 ⇒ 照常买。
+  //      ⛔ 羊字辈（11-18 才建）11-16 不生效、也不在 `tempTopicTokens` 里 ⇒ 不会牵连。
+  const ebbLeaderTopics = (ebbSecondTopic && out.ebb && out.ebb.leaderName &&
+    typeof o.stockTopicsOf === 'function')
+    ? (function() { try { return String(o.stockTopicsOf(out.ebb.leaderName) || ''); } catch (e) { return ''; } })()
+    : '';
+  const ebbBanWords = ebbSecondTopic
+    ? ebbBanTopicsOf(ebbSecondTopic, ebbLeaderTopics, o.tempTopicTokens, coreRes)
+    : { topics: [], tempTopics: [] };
+  const ebbTempTopics = ebbBanWords.tempTopics;
+  const ebbTopicBan = ebbBanWords.topics.length
+    ? makeEbbTopicBan(ebbBanWords.topics, o.stockTopicsOf, coreRes) : null;
   if (ebbTopicBan) {
     out.notes.push('ℹ️【第二十条 · 二次确认退潮】退潮题材【' + ebbTopicBan.topics.join('、') +
-      '】按【题材字段】判定：常规选股照旧（题材数量 / 档位 / 顺延都不变），但选出的票如果题材串里' +
+      '】按【题材字段】判定' +
+      (ebbTempTopics.length
+        ? '（原有题材 + 当日生效的临时题材【' + ebbTempTopics.join('、') + '】牵连，核心词的同义词一并算）'
+        : '') +
+      '：常规选股照旧（题材数量 / 档位 / 顺延都不变），但选出的票如果题材串里' +
       '含有这些字段（如 家电,热泵,东方），那一块会灰化、该行打【题材退潮不选】并写明原因；' +
       '题材串里没有这些字段的票照常买。卖点侧照旧按退潮收紧（本条只影响买点）。');
   }
@@ -2549,7 +2570,7 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //   ⚠️ 必须排在【卖点段之前】：剔出 buyNames 要赶在卖点判「今天又进买点 ⇒ 持有」之前
   //      （与 [ABN-TB] / [DEV-RULE] / [EBB-D1] 同一条不变式）。
   if (ebbTopicBan) {
-    const _ebbBan = _applyEbbTopicBan(out, ebbTopicBan);
+    const _ebbBan = _applyEbbTopicBan(out, ebbTopicBan, ebbTempTopics);
     if (_ebbBan.count > 0) {
       out.notes.push('⚠️【第' + EBB_SECOND_RULE_NO + '条 · 二次确认退潮】今天常规选股结论【不变】，' +
         '但有 ' + _ebbBan.count + ' 只票的题材串含退潮题材【' + ebbTopicBan.topics.join('、') +

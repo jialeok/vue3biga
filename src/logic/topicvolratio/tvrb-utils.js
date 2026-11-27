@@ -73,6 +73,53 @@ export function _sameTopicLoose(a, b, coreRes) {
 }
 
 /**
+ * ★★ [EBB-TOPIC-TEMP 2026-11-27 用户口径] 二次确认退潮的【禁买词集合】取材（§6 唯一实现）。
+ *
+ * 用户原话（11-27 第三次更正，逐字）：
+ *   「二次确认退潮你看总龙原来是什么题材，说明之前那个题材退潮，是不能买的吧？还有一点，你还要看
+ *     总龙有没有临时题材刚好在这个时间节点建立，如果有那么这个临时题材和票也受到牵连，是不能选的……
+ *     要牵连到大类的，也就是核心词农业包含的同义词都灰掉，不单是题材灰，包含的股票也是要灰的，
+ *     其它题材可以选进，但是如果选进的股票涉及到退潮的题材的字窜，也会变灰，这是一类规律，不是个别情况。」
+ *
+ * ⇒ 禁买词集合 = ① 总龙【原有题材】（`ebb.leaderTopic`，经核心词归一大类）
+ *              ∪ ② 当日【生效】的临时题材词里，总龙题材串里**确实沾着**的那几个（11-16 实测 = 东方）。
+ *
+ * 🔴 为什么必须有 ②：11-16 落库 `leader_topic = 水产品`（归一后 = 农业），而日出东方的题材串是
+ *   `家电,热泵,东方` —— 只取 ① 的话「东方」不在集合里 ⇒ 该票不灰（用户报的就是这个）。
+ *
+ * ⛔ 取不到总龙题材串 / 临时词表 ⇒ ② 一律为空（§10 判不出就不牵连，宁可只按 ① 判）；
+ * ⛔ 不在这里做「命中哪只票」的判定（那是 `makeEbbTopicBan().test` 的事，两件事分开）。
+ *
+ * @param {string} ebbTopic 总龙原有题材（退潮行落库的那个题材串）
+ * @param {string} leaderTopicsRaw 总龙自己的题材串（调用方已按【展示日】隔离过临时词）
+ * @param {string[]} tempTokens 当日生效的临时题材词（`getTempCoreWindowsForDate(date)` 的 name + synonyms）
+ * @param {(raw:string)=>string} [coreRes] 大类归一函数
+ * @returns {{topics:string[], tempTopics:string[]}} topics = 喂给 `makeEbbTopicBan` 的词（原有在前），
+ *          tempTopics = 其中来自临时题材牵连的那几个（供文案点名）
+ */
+export function ebbBanTopicsOf(ebbTopic, leaderTopicsRaw, tempTokens, coreRes) {
+  const out = { topics: [], tempTopics: [] };
+  const push = function(arr, t) {
+    const s = String(t === null || t === undefined ? '' : t).trim();
+    if (!s) return;
+    if (out.topics.indexOf(s) < 0) { out.topics.push(s); arr.push(s); }
+  };
+  push([], ebbTopic);
+  // 总龙题材串逐段归一 —— 与 `makeEbbTopicBan.test` 同一把尺子（大类归一）
+  const segs = String(leaderTopicsRaw === null || leaderTopicsRaw === undefined ? '' : leaderTopicsRaw)
+    .split(/[,，/、+;；|]/).map(function(s) { return s.trim(); }).filter(Boolean);
+  const segNorm = segs.map(function(s) { return _normTopic(s, coreRes); }).filter(Boolean);
+  if (segNorm.length === 0) return out;
+  (Array.isArray(tempTokens) ? tempTokens : []).forEach(function(tk) {
+    const n = _normTopic(String(tk === null || tk === undefined ? '' : tk).trim(), coreRes);
+    if (!n) return;
+    if (segNorm.indexOf(n) < 0) return;              // 总龙不沾这个临时词 ⇒ 不牵连
+    push(out.tempTopics, tk);
+  });
+  return out;
+}
+
+/**
  * ★★ [EBB-TOPIC-MEMBER 2026-11-27 · 第二十六条粒度细化] 退潮题材的【票级】判据。
  *
  * 用户报障（11-16 实证）：「二次确认退潮了，你看退潮的是哪个题材，那个题材中包含哪些题材字段，
@@ -86,7 +133,7 @@ export function _sameTopicLoose(a, b, coreRes) {
  * ⛔ 取不到题材串（没注入 `topicsOf` / 该票无题材）一律判【不命中】——
  *    §10：判不出就不许替用户排除股票，宁可保留原结论。
  *
- * @param {string|string[]} ebbTopics 退潮题材串（本次只有 `ebb.leaderTopic` 一个）
+ * @param {string|string[]} ebbTopics 退潮题材串（已由 `ebbBanTopicsOf` 拼好：原有题材 + 临时题材牵连词）
  * @param {(name:string)=>string} topicsOf 票名 ⇒ 题材串（由组合式按【展示日】隔离临时题材词后注入）
  * @param {(raw:string)=>string} [coreRes] 大类归一函数
  * @returns {{topics:string[],tokens:string[],segmentOf:(n:string)=>string,rawTopicsOf:(n:string)=>string,test:(n:string)=>boolean}|null}
