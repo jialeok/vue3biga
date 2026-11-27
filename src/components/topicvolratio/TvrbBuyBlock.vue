@@ -104,7 +104,8 @@
         >{{ p.seq }}</span>
         <span
           class="tvrb-name tvrb-pen-trigger"
-          :title="penTip"
+          :class="{ 'tvrb-name-del': p.nameDel }"
+          :title="penTip + (p.nameDel ? '｜⏰ 次日买：今天不下单，明天买' : '')"
           @click.stop="togglePens(p.name)"
         >{{ p.name }}</span>
         <!-- ★★ [TVRB-AUC-YIZI 2026-11-10 用户口径] 竞价一字涨停【照常选进】，但紧跟股票名

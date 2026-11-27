@@ -392,6 +392,17 @@
                   :head-text="newDragon.block.topic"
                 />
               </div>
+              <!-- ★★ [NEXT-DAY-BUY 2026-11-27 用户口径 · 规则手册八修] 第二十八条【次日承接 · 新龙】：
+               昨天（切换日）选出的新龙，今天才是真正要买的那一天。
+               结构与「新龙」那一块并列（同样在灰化容器 .tvrb-buy-list【之外】—— 今天真要买的票
+               不能被 grayscale 吞掉）；没有上一日名单 ⇒ Logic 层给 null ⇒ 这里不渲染。
+               ⛔ 类名独立（.tvrb-ndc-*）—— 与第二十八「新龙」块是两条时间线，DOM 查询不能混。
+               ⚠️ 组件也是独立的（TvrbNextDayCarryBlock）：本块是【跨日兑现】语义，
+                  塞进 TvrbBuyBlock 会让「今天选」和「昨天选」两套字段互相污染。 -->
+              <TvrbNextDayCarryBlock
+                v-if="nextDayCarry"
+                :block="nextDayCarry"
+              />
               <!-- ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条【十日涨幅 · 在列次数候补】那一只。
                结构与退潮替补 / 分歧买点 / 新龙同一形态：渲染在灰化容器 .tvrb-buy-list【之外】
                （今天真要买的那一只不能被 grayscale 吞掉）；不需要候补 / 选不出 / 次数未到 ⇒ 不渲染。
@@ -509,6 +520,10 @@ import TvrbDeviationBoard from '../components/topicvolratio/TvrbDeviationBoard.v
 // ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ 不能选股的专用提示板
 import TvrbDataGate from '../components/topicvolratio/TvrbDataGate.vue';
 import TvrbSellBlock from '../components/topicvolratio/TvrbSellBlock.vue';
+// ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] 第二十八条【次日承接 · 新龙】的独立小买点块。
+//    ⛔ 刻意不复用 TvrbBuyBlock：那边是「今天按题材选出来的票」，本块是「昨天选、今天买」的跨日语义，
+//      混在一起以后改任一条规则都会互相污染（用户要求「避免搞混以前逻辑」）。
+import TvrbNextDayCarryBlock from '../components/topicvolratio/TvrbNextDayCarryBlock.vue';
 import { useTopicVolRatioBoard } from '../composables/useTopicVolRatioBoard.js';
 
 // ⛔ 只调用一次组合式：重复调用会拿到【另一套 ref】，expose 出去的 refresh 就刷新不到本实例上
@@ -563,6 +578,9 @@ const {
   // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条新龙 / 切换日（switchDay 的文案已由 Logic 层写进
   //   block.reason / notes，模板不需要它 ⇒ ⛔ 不解构，免得留一个未使用变量）
   newDragon,
+  // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] 第二十八条【次日承接 · 新龙】（昨天选、今天买）。
+  //   没有上一日名单 / 那天确实没有 ⇒ null ⇒ 不渲染（§10 不拿空壳冒充结论）。
+  nextDayCarry,
   // ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条「十日涨幅 · 在列次数候补」那一只
   //   （同样渲染在灰化容器【之外】：题材量比太小被作废后，它才是今天真正要买的那一只）
   range10Backup,

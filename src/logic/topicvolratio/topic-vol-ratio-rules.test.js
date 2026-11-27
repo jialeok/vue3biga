@@ -83,6 +83,9 @@ import {
   SWITCH_RULE_NO,
   NEW_DRAGON_TAG,
   NEW_DRAGON_TONE,
+  // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] 第二十八条买点顺延到次日
+  NEXT_DAY_BUY_TAG,
+  NEXT_DAY_BUY_TONE,
   NEW_DRAGON_TOP_N,
   NEW_DRAGON_LOOKBACK_DAYS,
   NEW_DRAGON_CERTIFY_TOP_N,
@@ -3126,6 +3129,11 @@ describe('tvrb · [SWITCH] 经 buildTopicVolRatioPlan：切换日买点侧 = 新
     expect(!!p.newDragon.ebbTopicGray).toBe(false);
     expect(p.newDragon.picks[0].noBuyRowGray).toBe(true);
     expect(p.buyNames.has('冰山冷热')).toBe(false);
+    // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] 灰色行绝不继承 ⇒ 明天没有可承接的新龙
+    //   （用户原话：「灰色行的股票不要继承，这个非常重要，不然会误买，
+    //     因为灰色行的票的现在是错误的，没有买入的硬逻辑」）
+    expect(p.newDragon.nextDayBuy).toBeNull();
+    expect(p.notes.join('\n')).toContain('【没有】可承接的新龙');
     // 题材转换思路必须写在卡片上，且点名：老周期题材 / 今天的题材串 / 禁买字段
     const tt = String(p.newDragon.topicTransition || '');
     expect(tt).toContain('〔题材转换〕');
@@ -3183,19 +3191,34 @@ describe('tvrb · [SWITCH] 经 buildTopicVolRatioPlan：切换日买点侧 = 新
     expect(b).toContain('第 2 个交易日');
   });
 
-  it('★ 新龙那一行的动作标签 = 【新龙买】，客观数据仍在（走过 finishBuyBlock）', function() {
-    const plan = build();
+  // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径 · 规则手册八修] 标签已从【新龙买】改成【次日买】：
+  //   选股结论不变，买点顺延到下一交易日（用户：「第二十八条选票是对的，但是买点不对，应该是在次日买」）。
+  it('★ 新龙那一行的动作标签 = 【次日买】+ 股票名删除符，客观数据仍在（走过 finishBuyBlock）', function() {
+    const plan = build({ date: '2026-10-22' });
     const picks = plan.newDragon.picks;
     expect(picks).toHaveLength(1);
     const p = picks[0];
     expect(p.name).toBe('冰山冷热');
-    expect(p.buyActionTag).toBe(NEW_DRAGON_TAG);
-    expect(p.buyActionTone).toBe(NEW_DRAGON_TONE);
+    expect(p.buyActionTag).toBe(NEXT_DAY_BUY_TAG);
+    expect(p.buyActionTone).toBe(NEXT_DAY_BUY_TONE);
+    expect(p.buyNextDay).toBe(true);                 // ★ 旗子：明天买（⛔ 不是今天买）
+    expect(p.nameDel).toBe(true);                    // ★ 视图据此打删除符
     expect(p.holdTag).toBe('');                      // 与「今天要买」互斥
     expect(p.position).toBe('');
     expect(p.dragonLabel).toBe('总龙三');            // 20日涨幅第 3 名（客观数据未被标签改写影响）
-    expect(p.actionNote).toContain('第二十八条');
-    expect(p.actionNote).toContain('新周期');
+    expect(p.actionNote).toContain('次日买');
+    expect(p.actionNote).toContain('延迟');
+    // ★ 明天该承接谁 —— 由收口时算出（灰行不继承）
+    expect(plan.newDragon.nextDayBuy).not.toBeNull();
+    expect(plan.newDragon.nextDayBuy.names).toEqual(['冰山冷热']);
+    expect(plan.newDragon.nextDayBuy.date).toBe('2026-10-22');
+  });
+
+  it('★★ [NEXT-DAY-BUY] 新龙那只票【今天不进 buyNames】（不是今天买的票），常规那只照旧进', function() {
+    const plan = build();
+    expect(plan.buyNames.has('冰山冷热')).toBe(false);   // ⛔ 今天不买 ⇒ 卖点侧不许标【持有】
+    expect(plan.buyNames.has('宁波东力')).toBe(true);    // 常规那只今天真买
+    expect(plan.buyNames.has('新华传媒')).toBe(false);   // 老龙一不买
   });
 
   it('★ 名次文案必须跟数据走：第 6 名时⛔ 绝不许写「上到前五」（2026-10-22 用户当场抓到的表述错误）', function() {
@@ -3254,7 +3277,7 @@ describe('tvrb · [SWITCH] 经 buildTopicVolRatioPlan：切换日买点侧 = 新
 
   it('新龙那只票进 buyNames（卖点侧「今天又进买点 ⇒ 持有」要用它）', function() {
     const plan = build();
-    expect(plan.buyNames.has('冰山冷热')).toBe(true);
+    expect(plan.buyNames.has('冰山冷热')).toBe(false);   // ★ 八修后：今天不买（次日买）
     expect(plan.buyNames.has('宁波东力')).toBe(true);
     expect(plan.buyNames.has('新华传媒')).toBe(false);   // 老龙一不买
   });
@@ -3263,6 +3286,47 @@ describe('tvrb · [SWITCH] 经 buildTopicVolRatioPlan：切换日买点侧 = 新
     const plan = build();
     expect(plan.buy.newDragon).toBe(plan.newDragon);
     expect(plan.buy.newDragon.picks[0].name).toBe('冰山冷热');
+  });
+
+  // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径 · 规则手册八修] 第二十八条【次日承接】的三条硬约束
+  //   （只继承一天 / 灰色行不继承 / 有说明文字）。
+  it('★★ [NEXT-DAY-BUY] 次日承接块：上一日 nextDayBuy 的票今天以【新龙买】进买点侧 + 进 buyNames', function() {
+    const plan = build({ prevNextDayBuy: { date: '2026-10-21', names: ['光洋股份'], note: '' } });
+    expect(plan.nextDayCarry).not.toBeNull();
+    expect(plan.nextDayCarry.isNextDayCarry).toBe(true);
+    expect(plan.nextDayCarry.ruleNo).toBe(SWITCH_RULE_NO);
+    const p = plan.nextDayCarry.picks[0];
+    expect(p.name).toBe('光洋股份');
+    // ★ 今天【真的买】⇒ 标签 = 新龙买（⛔ 不是「次日买」；次日买是昨天那一侧的标签）
+    expect(p.buyActionTag).toBe(NEW_DRAGON_TAG);
+    expect(p.buyNextDay).toBeUndefined();        // ⛔ 不会二次传递
+    expect(p.nameDel).toBeUndefined();           // ⛔ 不打删除符（今天就要下单）
+    expect(plan.buyNames.has('光洋股份')).toBe(true);
+    // 四个装饰器经 _buyBlocksOf / eachBuyBlock 遍历 ⇒ 必须挂进 buy 槽位
+    expect(plan.buy.nextDayCarry).toBe(plan.nextDayCarry);
+    // 说明文字必须讲清「为什么延迟一天买」（用户明确要求）
+    const txt = [plan.nextDayCarry.reason].concat(plan.nextDayCarry.notes || []).join('\n');
+    expect(txt).toContain('第三天');
+    expect(txt).toContain('反攻');
+  });
+
+  it('★★ [NEXT-DAY-BUY] 只继承一天：承接块自己不再产出 nextDayBuy，也不会串进今天的新龙名单', function() {
+    const plan = build({ prevNextDayBuy: { date: '2026-10-21', names: ['光洋股份'], note: '' } });
+    expect(plan.nextDayCarry).not.toBeNull();
+    // ① 承接块自身没有 nextDayBuy 字段（结构上就不可能 A→B→C 链式继承）
+    expect(plan.nextDayCarry.nextDayBuy).toBeUndefined();
+    // ② 今天新龙的 nextDayBuy 只来自今天自己选出的票，⛔ 不含昨天承接来的那只
+    expect(plan.newDragon.nextDayBuy).not.toBeNull();
+    expect(plan.newDragon.nextDayBuy.names).not.toContain('光洋股份');
+    expect(plan.newDragon.nextDayBuy.names).toEqual(['冰山冷热']);
+  });
+
+  it('★★ [NEXT-DAY-BUY] 没有上一日名单（null / 空数组）⇒ 不建块（§11 零渲染）', function() {
+    const none = build({ prevNextDayBuy: null });
+    expect(none.nextDayCarry).toBeNull();
+    expect(none.buy.nextDayCarry).toBeNull();
+    const empty = build({ prevNextDayBuy: { date: '2026-10-21', names: [], note: '' } });
+    expect(empty.nextDayCarry).toBeNull();
   });
 
   it('切换日但【没有】符合条件的新龙 ⇒ 新龙行不出现 + 回落常规（仍只取一个题材）+ 原因可见', function() {

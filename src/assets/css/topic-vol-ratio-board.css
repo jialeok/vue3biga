@@ -493,6 +493,19 @@
     opacity: 0.5;
 }
 
+/* ---- ★★ [NEXT-DAY-BUY 2026-11-27 用户口径 · 规则手册八修] 第二十八条「次日买」的股票名删除符 ----
+   用户原话：「你在买点侧那里打上标签次日买，股票名称打上删除符。这样我就知道是明天买。」
+   ⇒ 只给【股票名】打删除线（⛔ 不灰整行、⛔ 不给序号打线）：
+     这一行仍然是【今天选出来的票】（选股结论成立），只是**下单时间在明天**，
+     视觉上必须和「今天不买 / 不开新仓」那几枚灰化标签区分开（那些是灰 + 半透明）。
+   判据在 Logic 层的 `p.nameDel`（nextday-buy.js），本处只做视觉（§21）。 */
+.tvrb-name.tvrb-name-del {
+    text-decoration: line-through;
+    text-decoration-thickness: 2px;
+    text-decoration-color: #b45309;
+    opacity: 0.75;
+}
+
 /* 蚂蚁线：选股段与卖点段之间的分隔（与决策看板同款行进虚线语言）。
    ⛔ 动画名必须独立（tvrbAnts），共用 decisionAnts 等于把两个看板耦成一体。 */
 .tvrb-sep {

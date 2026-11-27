@@ -49,7 +49,11 @@ export const BUY_SLOT_KEYS = ['heavy', 'light', 'noYizi', 'smallTopic', 'bigTopi
 // ★ [ABNORMAL-ALL 2026-11-13] 导出给 abnormal-overlay 复用（§6 买点块清单只有一个出处）。
 // ★★ [RULE-35-RENDER 2026-11-19] 第三十五条的槽位同样渲染在灰化容器之外 ⇒ 必须在这张清单里，
 //   否则那一行点开是「分笔明细暂不可用」（用户会以为数据没抓）。
-export const EXTRA_BLOCK_KEYS = ['ebbBuy', 'divergeBuy', 'newDragon', 'range10Backup', 'top30Huddle', 'weakHuddle', 'catchUp'];
+export const EXTRA_BLOCK_KEYS = ['ebbBuy', 'divergeBuy', 'newDragon', 'range10Backup', 'top30Huddle', 'weakHuddle', 'catchUp',
+  // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] 第二十八条的【次日承接】块（昨天选、今天买）。
+  //   同样渲染在灰化容器之外、同样「今天真要买」⇒ 必须在这张清单里：
+  //   否则它拿不到四个装饰器的客观数据、不会进次日卖点侧、也不会被存档遍历到。
+  'nextDayCarry'];
 
 /**
  * 遍历一份 plan 里【所有】会渲染买点行的块（唯一实现，§6）。
@@ -110,6 +114,12 @@ export function collectBuyNames(plan) {
   eachBuyBlock(plan, function (b) {
     (b.picks || []).forEach(function (p) {
       if (!p) return;
+      // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] 第二十八条的【次日买】票 **今天没有买**
+      //   ⇒ ⛔ 不算「昨日买点侧」。不跳这一步，次日的卖点侧会把一只根本没买过的票标成【持有】
+      //   （它的真正买点是明天，由 `nextDayCarry` 以「今天买」的身份进来）。
+      //   ⚠️ 这不是「能不能下单」的判定（那是 `_isBuyablePick` 的职责，本行不影响计数）——
+      //     它问的是另一个问题：**今天到底买没买**。
+      if (p.buyNextDay === true) return;
       if (!_isBuyablePick(p)) return;      // ★ 不买的行不继承（见上方 [SELL-INHERIT-BUYABLE]）
       const nm = String(p.name || p.stock || '').trim();
       if (nm) names.add(nm);

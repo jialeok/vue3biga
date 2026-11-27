@@ -12,6 +12,9 @@ import { pickFamilyNewDragon, splitTopicSegs, isLineageTopic } from './new-drago
 import { _normTopic, _sameTopicLoose, makeEbbTopicBan, ebbBanTopicsOf, buildLeaderEventTimeline, LEADER_EVENT_BASIS, _num, _pct2, _streakWord, _secondTopicLeaderInTop10, _range10RankMapOf, _closeRankOf, _rankTopEntries, _topicTop10Hits, _windowTextOf, _todayRankPhrase, _rankLabelOf, _oldTopicNameOf, _oldTopicBasisOf, _isBuyablePick } from './tvrb-utils.js';
 import { detectEbbDay, secondEbbTopicOfPrevDay, buildEbbDayRecord } from './tvrb-ebb.js';
 import { _applyPrevEbbSecondNoBuy, _applyLeaderLimitDownNoBuy, _applySecondTopicVolWeakNoBuy, _applyEbbSellRules, _buildEbbPicksBlock, _applyEbbBuyRules, _applyCashAlertBuyRules, _applyDivergeNoBuyRules, _applyAbnormalNoBuyRules, _buildDivergeBuyBlock, _buildDivergeCashAlert, _buildWeakHuddleBlock, _buildLeaderLimitDownHuddleBlock, _buildCatchUpBlock, _buildTop30HuddleBlock, resolveTvrbTier, avgVolRatioOf, formatAvgVolRatio, buildCashAlert, _dragonCandidates, _buildBlock, _buildNewDragonBlock, _withAuctionLegPct, _buildRange10BackupBlock, _applyAbnormalTopicBan, _applyEbbTopicBan } from './tvrb-blocks.js';
+// ★★ [NEXT-DAY-BUY 2026-11-27 用户口径 · 规则手册八修] 第二十八条「次日买」与「次日承接块」
+//    独立成一个模块（⛔ 不并进 tvrb-blocks 的当天买通道）：本文件的职责只是**接线**。
+import { markNextDayBuy, finalizeNextDayBuy, buildNextDayCarryBlock } from './nextday-buy.js';
 // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条「监管异动 · 十日涨幅硬上限」的事实判定
 //   （纯函数：把「总龙一昨日/今日十日涨幅 + 会被选中的票的十日涨幅」判成一块空仓标语）。
 //   ⛔ 阈值 / 文案全在 abnormal-10d.js + tvrb-constants.js，本文件只负责【注入事实】与【收口】。
@@ -812,6 +815,9 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       //   买点对象里 —— decision-collect#_buyBlocksOf 是「遍历一个买点块」的唯一实现，
       //   四个装饰器（量比趋势 / 名次变化 / 封单额 / 停牌）都经它取块（§6）。
       newDragon: null,
+      // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] 第二十八条的【次日承接】块（昨天选、今天买）。
+      //   与 newDragon 同一理由挂在买点对象里：四个装饰器经 _buyBlocksOf 遍历取块（§6）。
+      nextDayCarry: null,
       // ★★ [R10-BACKUP 2026-10-24] 第二十九条：十日涨幅 · 在列次数候补（题材量比太小 ⇒ 作废后替换的那一只）。
       //   同一理由挂在买点对象里（四个装饰器要遍历到它）。
       range10Backup: null,
@@ -875,6 +881,12 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     //   newDragon = 那一行新龙的买点块（独立容器、渲染在灰化容器之外）；不是切换日 / 选不出 ⇒ null。
     switchDay: null,
     newDragon: null,
+    // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] 第二十八条【次日承接】块：
+    //   昨天（切换日 T）选出的新龙，今天（T+1）才是真正该买的那一天。
+    //   · 来源 = 上一交易日存档的 `newDragon.nextDayBuy`（组合式读好注入 `o.prevNextDayBuy`）；
+    //   · ⛔ 本块不再产出 `nextDayBuy` ⇒ 结构上只继承【一天】（用户「不要无限继承」）；
+    //   · 没有上一日名单 / 名单为空 ⇒ 恒 null（视图 v-if 不渲染，§10 不拿空壳冒充结论）。
+    nextDayCarry: null,
     // ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条【十日涨幅 · 在列次数候补】那一行
     //   （独立容器、渲染在灰化容器之外：今天真要买的那一只不能被 grayscale 吞掉）；
     //   不需要候补 / 选不出 ⇒ null（视图 v-if 不渲染，§10 不拿空壳冒充结论）。
@@ -1828,6 +1840,26 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         '】的入选票沾到这些字段 ⇒ 灰化、不给买点（仍在老周期那条线上）；不沾 ⇒ 常规显示照常买。';
     }
     if (out.newDragon) out.buy.newDragon = out.newDragon;
+
+    // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径 · 规则手册八修] 第二十八条【次日买】。
+    //   用户原话：「第二十八条选票是对的，但是买点不对，应该是在次日买……打上标签次日买，
+    //   股票名称打上删除符。这样我就知道是明天买」。
+    //   ⛔ 这一步【只改标签 / 旗子 / 文案】，一个票都不增删 —— 选股结论完全照原规则。
+    //   ⛔ 不许把标签塞进 NO_BUY_ACTION_TAGS（那一张表是「今天不给买点」，会让「选股 N 只」变 0）。
+    if (out.newDragon) markNextDayBuy(out.newDragon, { date: String(o.date || '') });
+
+    // ★★ [NEXT-DAY-BUY] 第二十八条【次日承接】：把上一交易日存档里的 `nextDayBuy` 接进来。
+    //   三条硬约束（全部在 nextday-buy.js 头注释里）：
+    //     ① 只继承一天 —— 来源恒为上一日存档，本块自己不再产出 `nextDayBuy`；
+    //     ② 灰色行不继承 —— 名单在【上一日收口时】就已经剔掉了灰行（finalizeNextDayBuy），
+    //        万一存档是旧规则产物，本块仍会被今天的退潮牵连 / 逼近红线 / 异动收口再拦一次
+    //        （所以它必须建在下面那一串覆盖式改写【之前】）；
+    //     ③ 有说明文字 —— 文案在 nextday-buy.js（NEXT_DAY_BUY_NOTE），⛔ 别在视图里另写一份。
+    const _ndCarry = o.prevNextDayBuy || null;
+    if (_ndCarry && Array.isArray(_ndCarry.names) && _ndCarry.names.length > 0) {
+      out.nextDayCarry = buildNextDayCarryBlock(_ndCarry, list);
+      if (out.nextDayCarry) out.buy.nextDayCarry = out.nextDayCarry;
+    }
     // ★★ [NEW-DRAGON-CERTIFY / NEW-DRAGON-FAMILY 2026-11-12] 把「谁认证的谁、一共买几只」写进
     //   看板级说明（用户要「标清楚」）。family 路径（新题材 = 字号/字辈）优先，旧认证龙路径作兜底。
     const _cert = ndResult && ndResult.certifier;
@@ -2517,10 +2549,16 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   if (out.ebbBuy) {
     (out.ebbBuy.picks || []).forEach(function(p) { if (p && p.name) out.buyNames.add(p.name); });
   }
-  // ★★ [SWITCH 2026-10-22] 切换日的【新龙】同样是「今天进买点」⇒ 进名单（同一不变式）：
+  // ★★ [SWITCH 2026-10-22] 切换日的【新龙】原来是「今天进买点」⇒ 进名单。
+  // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] **口径已改：新龙今天【不买】**（买点顺延到次日）
+  //   ⇒ 从本行起【不再】把它加进 `buyNames`。理由与上面 [EBB-D1] 逐字相同（同一不变式）：
+  //   留在名单里 ⇒ 卖点侧会因「今天又进买点」把它标成【持有】，与「今天不下单、明天才买」正面矛盾。
+  //   ⛔ 别在这里补一句 `add` —— 明天由下面的【次日承接块】以「今天真要买」的身份进名单。
+  //
+  // ★★ [NEXT-DAY-BUY] 第二十八条的【次日承接】块才是「今天真要买」的票 ⇒ 进名单（同一不变式）：
   //   它若昨天已在卖点侧候选里，卖点侧要标【持有】而不是「竞价清仓」（同一天不可能既买又清）。
-  if (out.newDragon) {
-    (out.newDragon.picks || []).forEach(function(p) { if (p && p.name) out.buyNames.add(p.name); });
+  if (out.nextDayCarry) {
+    (out.nextDayCarry.picks || []).forEach(function(p) { if (p && p.name) out.buyNames.add(p.name); });
   }
   // ★★ [R10-BACKUP 2026-10-24] 第二十九条的【十日涨幅候补】同样是「今天进买点」⇒ 进名单（同一不变式）：
   //   它若昨天已在卖点侧候选里，卖点侧要标【持有】而不是「竞价清仓」（同一天不可能既买又清）。
@@ -2730,6 +2768,12 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //   收口在 return 前 + 数据闸门之后：既覆盖全部买点通道，也不会给「数据缺失硬空仓」日留脏标记。
   annotateAuctionYizi(out);
 
+  // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径 · 规则手册八修] 收口：算出【明天该承接哪几只新龙】。
+  //   ⛔ 位置不能挪到前面：退潮牵连 / 逼近红线 / 异动同题材 / 数据闸门 都是覆盖式改写，
+  //      必须全部跑完才知道哪一行是【灰色行】—— 灰行绝不继承（否则明天会误买）。
+  //   ⚠️ 本轮 plan 的日期 `o.date` 是【选票日】，它会写进 `nextDayBuy.date`，供次日组合式核对。
+  finalizeNextDayBuy(out, String(o.date || ''));
+
   // ★★ [R10-NOEXCLUDE 2026-10-24] 「选股 N 只」按【去重后的股票数】算：
   //   同一只票可能同时出现在「灰化题材块 + 十日涨幅候补」或「题材买点 + 十日涨幅候补」里
   //   （用户口径：两条通道叠加是确定性，两处都展示）⇒ 数行数会把它算成两只，与实际能下单的只数不符。
@@ -2758,6 +2802,10 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   });
   // ★ [SWITCH 2026-10-22] 新龙那一只也要计入「实际选出几只」（summary 文案读它）
   if (out.newDragon) _countUnique(out.newDragon.picks);
+  // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] 新龙今天【不下单】（标签 = 次日买）但它仍然是
+  //   「今天选出来的票」⇒ 照旧计入（用户口径：「第二十八条选票是对的」）。
+  //   第二十八条的【次日承接】块同理：它就是今天真要买的那几只，必须计入。
+  if (out.nextDayCarry) _countUnique(out.nextDayCarry.picks);
   // ★★ [R10-BACKUP 2026-10-24] 十日涨幅候补那一只同理（它就是今天能不能下单的那一只）
   if (out.range10Backup) _countUnique(out.range10Backup.picks);
   // ★★ [WEAK-HUDDLE 2026-10-27] 弱势切抱团那一只同理（今天唯一还能买的就是它）。
@@ -2897,9 +2945,12 @@ export function _applyAbnormalSweep(out, opts) {
   out.catchUp = null;
   out.top30Huddle = null;
   out.ebbNodeNote = null;
+  // ★★ [NEXT-DAY-BUY 2026-11-27] 异动日【全场空仓】⇒ 今天不买、明天的承接块也不许出现。
+  out.nextDayCarry = null;
   if (out.buy) {
     out.buy.ebbSecond = null;
     out.buy.newDragon = null;
+    out.buy.nextDayCarry = null;
     out.buy.range10Backup = null;
     out.buy.weakHuddle = null;
     out.buy.catchUp = null;
@@ -2952,13 +3003,13 @@ export function _applyDeviationNearRule(out, opts) {
   if (!devAuto || devAuto.size === 0) return 0;
   const basis = String(o.basis || '');
 
-  const slots = [out.ebbBuy, out.divergeBuy, out.newDragon, out.range10Backup,
+  const slots = [out.ebbBuy, out.divergeBuy, out.newDragon, out.nextDayCarry, out.range10Backup,
     out.weakHuddle, out.catchUp, out.top30Huddle];
   (out.blocks || []).forEach(function (b) { slots.push(b); });
   if (out.buy) {
     slots.push(out.buy.heavy, out.buy.light, out.buy.noYizi, out.buy.smallTopic,
-      out.buy.bigTopic, out.buy.ebbSecond, out.buy.newDragon, out.buy.range10Backup,
-      out.buy.weakHuddle, out.buy.catchUp, out.buy.top30Huddle);
+      out.buy.bigTopic, out.buy.ebbSecond, out.buy.newDragon, out.buy.nextDayCarry,
+      out.buy.range10Backup, out.buy.weakHuddle, out.buy.catchUp, out.buy.top30Huddle);
   }
 
   const hit = [];
@@ -3097,6 +3148,9 @@ export function _clearBuySideForDataGate(out) {
   out.catchUp = null;
   out.top30Huddle = null;
   out.ebbNodeNote = null;
+  // ★★ [NEXT-DAY-BUY 2026-11-27] 第二十八条的【次日承接】块同样是「今天要买」的通道
+  //   ⇒ 数据缺失日必须一起清掉（否则那份名单会绕过闸门漏到屏幕上）。
+  out.nextDayCarry = null;
   // 空仓提醒换成「未触发」常量：数据缺失日由提示板（TvrbDataGate）说话，
   // ⛔ 不能让「平均量比 < 25」那种基于数值的标语在没数值时出现（那就是编出来的结论）。
   out.cashAlert = TVRB_CASH_ALERT_NONE;
@@ -3114,6 +3168,7 @@ export function _clearBuySideForDataGate(out) {
     out.buy.bigTopic = null;
     out.buy.ebbSecond = null;
     out.buy.newDragon = null;
+    out.buy.nextDayCarry = null;
     out.buy.range10Backup = null;
     out.buy.weakHuddle = null;
     out.buy.catchUp = null;
