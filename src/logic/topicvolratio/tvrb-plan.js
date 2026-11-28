@@ -11,7 +11,7 @@ import { TVRB_MIN_COUNT, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT
 import { pickFamilyNewDragon, splitTopicSegs, isLineageTopic } from './new-dragon-family.js';
 import { _normTopic, _sameTopicLoose, makeEbbTopicBan, ebbBanTopicsOf, buildLeaderEventTimeline, LEADER_EVENT_BASIS, _num, _pct2, _streakWord, _secondTopicLeaderInTop10, _range10RankMapOf, _closeRankOf, _rankTopEntries, _topicTop10Hits, _windowTextOf, _todayRankPhrase, _rankLabelOf, _oldTopicNameOf, _oldTopicBasisOf, _isBuyablePick } from './tvrb-utils.js';
 import { detectEbbDay, secondEbbTopicOfPrevDay, buildEbbDayRecord } from './tvrb-ebb.js';
-import { _applyPrevEbbSecondNoBuy, _applyLeaderLimitDownNoBuy, _applySecondTopicVolWeakNoBuy, _applyEbbSellRules, _buildEbbPicksBlock, _applyEbbBuyRules, _applyCashAlertBuyRules, _applyDivergeNoBuyRules, _applyAbnormalNoBuyRules, _buildDivergeBuyBlock, _buildDivergeCashAlert, _buildWeakHuddleBlock, _buildLeaderLimitDownHuddleBlock, _buildCatchUpBlock, _buildTop30HuddleBlock, resolveTvrbTier, avgVolRatioOf, formatAvgVolRatio, buildCashAlert, _dragonCandidates, _buildBlock, _buildNewDragonBlock, _withAuctionLegPct, _buildRange10BackupBlock, _applyAbnormalTopicBan, _applyEbbTopicBan } from './tvrb-blocks.js';
+import { _applyPrevEbbSecondNoBuy, _applyLeaderLimitDownNoBuy, _applySecondTopicVolWeakNoBuy, _applyBigSecondR10NoBuy, _applyBigSecondR10SellNote, _applyEbbSellRules, _buildEbbPicksBlock, _applyEbbBuyRules, _applyCashAlertBuyRules, _applyDivergeNoBuyRules, _applyAbnormalNoBuyRules, _buildDivergeBuyBlock, _buildDivergeCashAlert, _buildWeakHuddleBlock, _buildLeaderLimitDownHuddleBlock, _buildCatchUpBlock, _buildTop30HuddleBlock, resolveTvrbTier, avgVolRatioOf, formatAvgVolRatio, buildCashAlert, _dragonCandidates, _buildBlock, _buildNewDragonBlock, _withAuctionLegPct, _buildRange10BackupBlock, _applyAbnormalTopicBan, _applyEbbTopicBan } from './tvrb-blocks.js';
 // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径 · 规则手册八修] 第二十八条「次日买」与「次日承接块」
 //    独立成一个模块（⛔ 不并进 tvrb-blocks 的当天买通道）：本文件的职责只是**接线**。
 import { markNextDayBuy, finalizeNextDayBuy } from './nextday-buy.js';
@@ -1501,7 +1501,12 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       topicPool: bigPool,
       coreRes: coreRes,
       top20Text: r20BaseText,
-      topicOwner: topicOwner
+      topicOwner: topicOwner,
+      // ★★ [RULE-4D 2026-11-29 用户口径] 第四·d：大题材第二只票的【十日涨幅主板前十】名次表
+      //   （9:26 竞价口径，与第二十九条候补 / 第二题材龙一闸门同一份 `r10Rank926`，§6 不另排一次）。
+      //   ⚠️ 只注入 bigOpt ⇒ 第二十九条题材内选票 / 小题材收紧不套本条（各自有既有取票口径）。
+      r10Rank926: r10Rank926,
+      r10TopText: r10BaseText
     } : null;
     // ★★ [CASE-1123-HAILI 2026-11-26] 记下「本块是不是走第二十九条题材内选票」——
     //   龙位说明的措辞由它决定：该通道按「十日涨幅前十 + 首次/二次在列」选票，⛔ 不是按龙位，
@@ -1806,6 +1811,12 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     ruleNo: RULE_NO.FIRST
   };
   out.blocks.forEach(function(b) { finishBuyBlock(b, fOpts); });
+
+  // ★★ [RULE-4D 2026-11-29 用户口径] 第四·d：大题材第二只未进十日涨幅主板前十 ⇒ 只灰那一行、不买。
+  //   ⛔ 必须排在 finishBuyBlock【之后】（覆盖原始买点标签）、排在所有【整块级】改写（题材量比不达标灰块 /
+  //      龙一跌停灰块 / 退潮 / 分歧 / 空仓提醒）【之前】—— 整块灰优先级更高，让它盖住这一行（用户口径：
+  //      「题材平均量比不达标本来整个题材灰掉，这个不用改……优先级问题」）。
+  _applyBigSecondR10NoBuy(out.blocks);
 
   // ★★ [TOPIC-INNER-SELECT 2026-11-17 用户口径] 第二十九条 · 灰块：整块照常列出、今天不买。
   //   ⛔ 必须排在 `finishBuyBlock`【之后】：那一步才算出每行的原始买点标签，这里做覆盖式改写
@@ -2752,6 +2763,18 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     }
   }
 
+  // ★★ [RULE-4D 2026-11-29 用户口径] 第四·d：被灰掉的第二只票【不进买点名单】——
+  //   它今天不买；若留在名单里，卖点侧会因「今天又进买点」把它标成【持有】，与「灰掉不买」正面矛盾。
+  //   与 [EBB-D1] / [LEADER-LIMITDOWN] / [TOPIC-INNER-SELECT] 是同一条不变式（展示保留、名单剔除）。
+  //   ⛔ 必须排在【卖点段之前】（buyNames 是 buildSellPlan 判【持有】的输入）。
+  out.blocks.forEach(function(b) {
+    const ns = (b && Array.isArray(b.r10SecondNoBuyNames)) ? b.r10SecondNoBuyNames : [];
+    ns.forEach(function(n) {
+      const nm = String(n || '').trim();
+      if (nm) out.buyNames.delete(nm);
+    });
+  });
+
   // ★ 卖点段 —— decision-rules 的【同一份实现】；⛔ 候选池不依赖本看板选股（= 昨日打过买标签的票），
   //   只有「今天又进买点」这一条换成【本看板自己的名单】（本看板内部自洽）。
   const sellRows = o.sellRows || [];
@@ -2801,6 +2824,10 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     //      这里放在最后，仅在【没有被更高优先级改写】的行上补说明（下面函数自己按名字匹配，
     //      若该行已被改成「异动卖」，说明里已写明原因，续命说明不再追加 —— 见函数实现里的判断）。
     applyNewDragonLifeSellNote(out);
+    // ★★ [RULE-4D 2026-11-29 用户口径 · 铁律 4] 第四·d 卖点侧说明同步：
+    //   被灰掉的第二只票若昨天已买（在卖点候选里），买点侧说「今天不买」，卖点侧就【不能还标【持有】】——
+    //   它已被剔出 buyNames（见上方剔除段），这里只补一句「为什么不是持有」，⛔ 不改分组 / 不删行。
+    _applyBigSecondR10SellNote(out);
   }
 
   // ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ **硬空仓**（fail-closed）。

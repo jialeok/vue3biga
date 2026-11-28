@@ -328,7 +328,8 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     //   且总龙自己也沾的临时题材词（11-16 日出东方灰化 + 【题材退潮不选】）⇒ 38 → 39。
     //   ⇒ 选股结论变 ⇒ 36 → 37 → 38 → 39。
     // ★★ [NEW-DRAGON-LIFE 2026-11-28] 新增第三十七条【新龙续命】⇒ 存档多一个 newDragonLife 块 ⇒ 47 → 48
-    expect(TVRB_RULES_VERSION).toBe(48);
+    // ★★ [RULE-4D 2026-11-29] 第四·d 大题材第二只十日涨幅卡（第二只可能被灰掉、不进 buyNames）⇒ 48 → 49
+    expect(TVRB_RULES_VERSION).toBe(49);
   });
 
   // ★★ [ABN-MAINBOARD-GUARD 2026-11-14] 第三十四条「全场十日涨幅最高票」只认主板。
@@ -465,7 +466,8 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     //   ★★ [EBB-TOPIC-TEMP 2026-11-27] 禁买集合 = 原有题材 + 临时题材牵连（11-16 日出东方灰化）⇒ 38 → 39
     //   ★★ [NEXT-DAY-BUY 2026-11-27] 第二十八条买点顺延到次日 + 存档多一个 newDragon.nextDayBuy ⇒ 45 → 46
     //   ★★ [NEW-DRAGON-LIFE 2026-11-28] 第三十七条新龙续命（存档多一个 newDragonLife 块）⇒ 47 → 48
-    expect(TVRB_RULES_VERSION).toBe(48);
+    //   ★★ [RULE-4D 2026-11-29] 第四·d 大题材第二只十日涨幅卡（买点结论变）⇒ 48 → 49
+    expect(TVRB_RULES_VERSION).toBe(49);
     expect(_swCacheNo(readFileSync('public/sw.js', 'utf8'))).toBeGreaterThanOrEqual(67);
   });
 

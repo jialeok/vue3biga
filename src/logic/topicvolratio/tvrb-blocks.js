@@ -10,7 +10,7 @@
 //
 // 外部依赖的口径说明（原 topic-vol-ratio-rules.js 头部的 import 注释，逐条搬过来）：
 
-import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_PICK_TONE, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, EBB_SECOND_BUY_TAG, EBB_SECOND_BUY_TONE, EBB_SECOND_RULE_NO, CASH_NO_BUY_TAG, CASH_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_BLOCK_TOPIC, WEAK_HUDDLE_TOP_N, WEAK_HUDDLE_TONE, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_BLOCK_TOPIC, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, CATCH_UP_TONE, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE, SECOND_TOPIC_VOLWEAK_NO_BUY_TAG, SECOND_TOPIC_VOLWEAK_NO_BUY_TONE, DIVERGE_DIP_TAG, DIVERGE_FOLLOW_TAG, DIVERGE_NO_BUY_TAG, DIVERGE_BUY_TONE, DIVERGE_NO_BUY_TONE, DIVERGE_RULE_NO, TVRB_CASH_ALERT_NONE, SWITCH_RULE_NO, NEW_DRAGON_TAG, NEW_DRAGON_TONE, RANGE10_BACKUP_TONE, RANGE10_BACKUP_TAG, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_TOPIC_BAN_TAG, ABNORMAL_TOPIC_BAN_TONE, EBB_TOPIC_BAN_TAG, EBB_TOPIC_BAN_TONE, TOP30_HUDDLE_RULE_NO, TOP30_HUDDLE_TAG, TOP30_HUDDLE_BLOCK_TOPIC, TOP30_HUDDLE_TONE, TOP30_HUDDLE_TOP_N } from './tvrb-constants.js';
+import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_PICK_TONE, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, EBB_SECOND_BUY_TAG, EBB_SECOND_BUY_TONE, EBB_SECOND_RULE_NO, CASH_NO_BUY_TAG, CASH_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_BLOCK_TOPIC, WEAK_HUDDLE_TOP_N, WEAK_HUDDLE_TONE, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_BLOCK_TOPIC, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, CATCH_UP_TONE, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE, SECOND_TOPIC_VOLWEAK_NO_BUY_TAG, SECOND_TOPIC_VOLWEAK_NO_BUY_TONE, BIG_SECOND_R10_NO_BUY_TAG, BIG_SECOND_R10_NO_BUY_TONE, DIVERGE_DIP_TAG, DIVERGE_FOLLOW_TAG, DIVERGE_NO_BUY_TAG, DIVERGE_BUY_TONE, DIVERGE_NO_BUY_TONE, DIVERGE_RULE_NO, TVRB_CASH_ALERT_NONE, SWITCH_RULE_NO, NEW_DRAGON_TAG, NEW_DRAGON_TONE, RANGE10_BACKUP_TONE, RANGE10_BACKUP_TAG, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_TOPIC_BAN_TAG, ABNORMAL_TOPIC_BAN_TONE, EBB_TOPIC_BAN_TAG, EBB_TOPIC_BAN_TONE, TOP30_HUDDLE_RULE_NO, TOP30_HUDDLE_TAG, TOP30_HUDDLE_BLOCK_TOPIC, TOP30_HUDDLE_TONE, TOP30_HUDDLE_TOP_N } from './tvrb-constants.js';
 // ★★ [RULE-35 2026-11-18 用户口径] 第三十五条【30日涨幅抱团】的判定纯函数（§6 唯一实现：
 //   「30日涨幅前三里与本灰色题材块同大类的、名次最靠前的那 1 只」只在这里算一次）。
 import { pickTop30Huddle } from './top30-huddle.js';
@@ -174,7 +174,9 @@ export function _applySecondTopicVolWeakNoBuy(blocks, info) {
     b.topicVolWeakGray = true;            // ★ 视图层据此给该块挂灰化类（只灰这一个题材块）
     if (!Array.isArray(b.notes)) b.notes = [];
     b.notes.push('⚠️ ' + lead +
-      '（等这个题材重新放量、或它的票重新进入十日前十，再看买点。）');
+      '（等这个题材重新放量、或它的票重新进入十日前十，再看买点。）' +
+      'ℹ️ 【与第四·d 的分工】第四·d 只管【平均量比达标的大题材】里那第二只票（未进十日涨幅主板前十 ⇒ 只灰那一只）；' +
+      '本题材是【平均量比不达标】⇒ 按原口径整块灰（优先级更高），与第四·d 无关。');
     (b.picks || []).forEach(function(p) {
       if (!p || !p.name) return;
       p.position = '';
@@ -184,6 +186,85 @@ export function _applySecondTopicVolWeakNoBuy(blocks, info) {
       p.actionNote = lead;
     });
   });
+}
+
+/**
+ * 【第四·d · 大题材第二只十日涨幅卡】买点侧覆盖（⛔ 绝不去改 finishBuyBlock 内部）。
+ *
+ * 用户原话：「大题材的第 2 只票……再收紧下规则，龙二如果没有进 10 日涨幅前 10 就灰掉，
+ *   也就是不能买」「判不出，算灰的，但要有提醒」「不延顺，只留龙一」。
+ *
+ * 为什么是后处理：`_buildBlock` 只挂 `p.bigSecondR10NoBuy` 事实，买点标签由
+ *   `finishBuyBlock` 算 —— 必须在它【之后】覆盖，否则会被它覆盖回来（与
+ *   `_applySecondTopicVolWeakNoBuy` / `_applyDeviationNearRule` 同一范式）。
+ *
+ * 只改【这一行】：`noBuyRowGray` + 标签 + 说明 + 清仓位 / 持有；⛔ 不动同块第一只、不动客观数据。
+ *
+ * @param {Array} blocks buildTopicVolRatioPlan 的入选题材块数组
+ * @returns {Array<string>} 被灰掉的股票名（plan 层据此从 buyNames 剔除）
+ */
+export function _applyBigSecondR10NoBuy(blocks) {
+  const names = [];
+  (blocks || []).forEach(function(b) {
+    if (!b || !Array.isArray(b.picks)) return;
+    b.picks.forEach(function(p) {
+      if (!p || !p.name || !p.bigSecondR10NoBuy) return;
+      const g = p.bigSecondR10NoBuy;
+      const text = String(g.text || '9:26 竞价口径').trim();
+      p.position = '';
+      p.holdTag = '';
+      p.buyActionTag = BIG_SECOND_R10_NO_BUY_TAG;
+      p.buyActionTone = BIG_SECOND_R10_NO_BUY_TONE;
+      // ★ [ROW-GRAY] 只灰这一行（视图既有 .tvrb-row-nobuy-gray），⛔ 不灰整个题材块。
+      p.noBuyRowGray = true;
+      p.actionNote = '【第四·d · 大题材第二只十日涨幅卡】本股是本题材（数量 > ' + TVRB_MID_MAX +
+        ' 只）入选的【第二只】，' + (g.judge === 'out'
+          ? ('当天十日涨幅〔' + text + '〕主板排第 ' + g.rank + ' 名，没进前十（含第 10 名）')
+          : ('当天十日涨幅〔' + text + '〕主板名次【判不出】（整表没读到 / 它不在主板榜）')) +
+        ' ⇒ 按规则【灰掉、今天不买】（判不出同样不能当成达标），⛔ 不延顺、不换下一只，' +
+        '本题材实际只买第一只。' + (g.judge === 'out' ? '' : '数据到货后自动重判。');
+      names.push(String(p.name).trim());
+    });
+  });
+  return names;
+}
+
+/**
+ * 【第四·d · 卖点侧说明同步】（铁律 4：买点说「不买」，卖点就不能还标【持有】）。
+ *
+ * 机制：plan 层已把这几个名字从 `buyNames` 剔除 ⇒ `buildSellPlan` 不会因「今天又进买点」
+ *   给出【持有】。本函数只补【说明】，讲清「为什么不标持有」，⛔ 不改分组 / 不删行。
+ *   已被更高优先级改写过的行（第三十六条「异动卖」）不再追加 —— 那一行的动作本来就该覆盖。
+ *
+ * @param {object} out 计划对象（`out.sell` 已产出）
+ * @returns {number} 被追加说明的行数
+ */
+export function _applyBigSecondR10SellNote(out) {
+  if (!out || !Array.isArray(out.sell) || out.sell.length === 0) return 0;
+  const names = new Set();
+  (out.blocks || []).forEach(function(b) {
+    (b && Array.isArray(b.r10SecondNoBuyNames) ? b.r10SecondNoBuyNames : []).forEach(function(n) {
+      const nm = String(n || '').trim();
+      if (nm) names.add(nm);
+    });
+  });
+  if (names.size === 0) return 0;
+  let n = 0;
+  out.sell.forEach(function(g) {
+    (g && Array.isArray(g.items) ? g.items : []).forEach(function(it) {
+      if (!it || !it.name) return;
+      if (!names.has(String(it.name).trim())) return;
+      if (it.devRuleStage) return;   // 第三十六条「异动卖」优先级更高，说明已写明原因
+      const lead = '【第四·d · 大题材第二只十日涨幅卡】买点侧本日已把这只票灰掉' +
+        '（大题材第二只未进十日涨幅主板前十 / 名次判不出 ⇒ 不买）⇒ 卖点侧【不标【' + HOLD_TAG +
+        '】】，按本行原卖点动作执行。';
+      it.actionNote = String(it.actionNote || '').trim()
+        ? (lead + ' ' + String(it.actionNote))
+        : lead;
+      n++;
+    });
+  });
+  return n;
 }
 
 /**
@@ -1865,6 +1946,34 @@ export function _dragonCandidates(block, dragonMap, pctMap) {
 }
 
 /**
+ * ★★ [RULE-4D 2026-11-29 用户口径] 第四·d：大题材第二只票的【十日涨幅主板前十】名次。
+ *
+ * 用户原话：「大题材的第 2 只票……再收紧下规则，龙二如果没有进 10 日涨幅前 10 就灰掉，
+ *   也就是不能买」「判不出，算灰的，但要有提醒」「不延顺，只留龙一」。
+ *
+ * 三态（§10 判不出 ≠ 判出「没进」）：
+ *   · `pass`    ⇒ 名次 ≤ PRESENCE_TOP_N（含第 10 名）⇒ 正常；
+ *   · `out`     ⇒ 名次 > 10 ⇒ 灰掉不买；
+ *   · `unknown` ⇒ 名次表里查不到 / 名次为空 ⇒ 判不出 ⇒ **同样灰掉**，但文案必须写提醒。
+ *
+ * ⛔ 名次表必须由调用方注入【9:26 竞价口径】（`_range10RankMapOf(_withAuctionLegPct(...))`）——
+ *   本函数不另排一次名次（§6 同一把尺子）。
+ *
+ * @param {string} name 第二只票
+ * @param {Map<string,{rank:number|null,pct:number|null}>|null} rankMap 十日涨幅主板名次表
+ * @returns {{name:string, rank:number|null, judge:'pass'|'out'|'unknown'}}
+ */
+function _judgeBigSecondR10(name, rankMap) {
+  const nm = String(name || '').trim();
+  if (!nm) return { name: '', rank: null, judge: 'unknown' };
+  const hit = (rankMap instanceof Map) ? rankMap.get(nm) : null;
+  const raw = hit ? Number(hit.rank) : NaN;
+  const rank = (isFinite(raw) && raw > 0) ? raw : null;
+  if (rank === null) return { name: nm, rank: null, judge: 'unknown' };
+  return { name: nm, rank: rank, judge: (rank > PRESENCE_TOP_N) ? 'out' : 'pass' };
+}
+
+/**
  * 构造一个入选题材的块 —— ★形状与 decision-rules#_buildTopicBuyBlock【完全一致】★。
  *
  * ⛔ 为什么必须同形状（这是本文件最容易踩的坑）：块要交给 decision-rules#finishBuyBlock
@@ -2090,6 +2199,23 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
     return p;
   });
 
+  // ★★ [RULE-4D 2026-11-29 用户口径] 第四·d：大题材第二只票必须进【十日涨幅主板前十】。
+  //   · 只在 bigOpt 注入 `r10Rank926` 时才生效（老调用方 / 单测不注入 ⇒ 零行为变化，§11）；
+  //   · 判出 `out` / 判不出 `unknown` ⇒ 只灰这一行（标签在 finishBuyBlock 之后由
+  //     `_applyBigSecondR10NoBuy` 覆盖），⛔ 不延顺、不补位，本题材实际只买第一只；
+  //   · 第一只（picks[0]）不受任何影响。
+  const r10GateMap = (o.r10Rank926 instanceof Map) ? o.r10Rank926 : null;
+  const r10GateText = String(o.r10TopText || '9:26 竞价口径').trim();
+  let bigSecondGate = null;
+  if (tierIsBig && r10GateMap && picks.length >= 2) {
+    const gate = _judgeBigSecondR10(picks[1].name, r10GateMap);
+    if (gate.judge !== 'pass') {
+      bigSecondGate = { name: gate.name, rank: gate.rank, judge: gate.judge, text: r10GateText };
+      picks[1].bigSecondR10NoBuy = bigSecondGate;
+    }
+  }
+  const bigSecondNoBuyNames = bigSecondGate ? [bigSecondGate.name] : [];
+
   const skippedNames = skipped.map(function(c) {
     return (c.rank ? getDragonLabel(c.rank) : '') + c.name;
   });
@@ -2135,7 +2261,7 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
   //   就是这么被误读成「龙位第 3 名被选、第 1/2 名被跳过」（用户原话：「是不是口径没对上啊，非常乱」）。
   //   `o.smallTopic` 是「排名第一 + 4~6 只」的另一条收紧档，文案已单列，⛔ 不要重复命中。
   const useSecondTopicInner = !!(o.secondTopic && Array.isArray(o.order) && o.order.length > 0) && !o.smallTopic;
-  const reason = o.smallTopic
+  let reason = o.smallTopic
     ? ('按【平均竞价量比 ' + formatAvgVolRatio(avg) + '】排第 ' + block.rank +
        '，股票数量 ' + tier.count + ' 只（' + tier.rangeText + '）⇒ 取 ' + tier.pickCount +
        ' 只；★ 本题材数量落在【' + TVRB_MIN_COUNT + '~' + TVRB_SMALL_TOPIC_MAX +
@@ -2160,6 +2286,12 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
            '，股票数量 ' + tier.count + ' 只（' + tier.rangeText + '）⇒ 取 ' + tier.pickCount +
            ' 只；按【龙一 → 龙二 → …】从高到低依次取票：' + YIZI_KEEP_TEXT_SENTENCE +
            '遇到【连续停牌】买不进 ⇒ 该龙位【不再补位】（本题材实际少取相应只数）。')));
+  // ★★ [RULE-4D 2026-11-29 用户口径] 块头「取 2 只」必须写明第二只的附加条件（⛔ 判定与文案同处，§6）。
+  if (tierIsBig && r10GateMap) {
+    reason += '★【第四·d · 大题材第二只十日涨幅卡】第二只还须进【当天十日涨幅〔' + r10GateText +
+      '〕· 只主板前十（含第 10 名）】：没进 / 名次判不出 ⇒ 只灰那一只、今天不买，' +
+      '⛔ 不延顺、不换下一只，本题材只买第一只。';
+  }
 
   const notes = [];
   notes.push(o.smallTopic
@@ -2188,6 +2320,21 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
              '），数量 ' + tier.count + ' 只 → ' + tier.rangeText + ' ⇒ 取 ' + tier.pickCount +
              ' 只；入选股票按龙位从高到低依次取：' + YIZI_KEEP_TEXT_SENTENCE +
              '【连续停牌】买不进 ⇒ 该龙位【不再补位】（停牌票连竞价都没有，占着龙位也买不到，名额跟着作废）。'))));
+  // ★★ [RULE-4D 2026-11-29 用户口径] 第四·d 的块内说明（判不出也要写提醒，⛔ 不静默）。
+  if (tierIsBig && r10GateMap) {
+    notes.push('★【第四·d · 大题材第二只十日涨幅卡】本题材数量 > ' + TVRB_MID_MAX + ' 只（取 ' +
+      tier.pickCount + ' 只）⇒ 第二只还须进【当天十日涨幅〔' + r10GateText + '〕· 只主板前十（含第 10 名）】；' +
+      '没进 / 名次判不出 ⇒ 只把那一只灰掉、今天不买（⛔ 不延顺、不换下一只），本题材实际只买第一只。' +
+      '第一只不受本条影响。');
+    if (bigSecondGate) {
+      notes.push(bigSecondGate.judge === 'out'
+        ? ('⚠️ 本题材第二只【' + bigSecondGate.name + '】当天十日涨幅〔' + r10GateText + '〕主板第 ' +
+           bigSecondGate.rank + ' 名（未进前十）⇒ 按第四·d 灰掉、今天不买；⛔ 不延顺，本题材只买第一只。')
+        : ('⚠️ 本题材第二只【' + bigSecondGate.name + '】当天十日涨幅〔' + r10GateText +
+           '〕主板名次【判不出】（整表没读到 / 它不在主板榜）⇒ 按第四·d 同样灰掉、今天不买' +
+           '（判不出不能当成达标，§10），⛔ 不延顺，只买第一只；数据到货后自动重判。'));
+    }
+  }
   // ★★ [AUTO-PICK-TOP20] / [MID-TOP20] 判定可追溯：前十命中哪几只、取的是哪几只、第几名起不再选（用户要能逐只核对）
   if (useTop20) {
     const got = picks.map(function(p) { return String(p.name || '').trim(); }).filter(Boolean);
@@ -2203,7 +2350,11 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
     if (topicTop20.hits.length < tier.pickCount) {
       notes.push('⚠️ 前十只有 ' + topicTop20.hits.length + ' 只本题材的票 ⇒ 剩下的 ' +
         (tier.pickCount - topicTop20.hits.length) + ' 只从【同题材其余票里按龙位靠前的】补上' +
-        '（用户口径：「如果只有一只出现在排名前十的，你在同题材的再找一只补上，同题材靠前的」）。');
+        '（用户口径：「如果只有一只出现在排名前十的，你在同题材的再找一只补上，同题材靠前的」）。' +
+        ((tierIsBig && r10GateMap)
+          ? ('⚠️ 补上来的第二只同样要过【第四·d】那道卡：当天十日涨幅〔' + r10GateText +
+             '〕主板没进前十（或名次判不出）⇒ 灰掉不买、⛔ 不延顺，本题材只买第一只。')
+          : ''));
     }
     if (top20YiziNames.length > 0) {
       notes.push('★ ' + top20YiziNames.join('、') + ' 是【竞价一字涨停】（9:25 竞价就封在板上、' +
@@ -2319,7 +2470,15 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
     top20Judge: (topicTop20 && useTop20) ? topicTop20.judge : ((topicTop20 && topicTop20.judge === 'hit') ? 'hit' : ''),
     top20Hits: useTop20 ? topicTop20.hits.map(function(h) {
       return { name: h.name, rank20: h.rank20, pct: h.pct };
-    }) : []
+    }) : [],
+    /**
+     * ★★ [RULE-4D 2026-11-29 用户口径] 第四·d 留痕：
+     *   · `r10SecondNoBuyNames` = 被这条规则灰掉的名字（plan 层据此从 buyNames 剔除 ⇒ 卖点侧不标【持有】）；
+     *   · `r10SecondNoBuyInfo`  = `{name, rank, judge:'out'|'unknown', text}`；null = 第二只达标 / 本档不适用。
+     * ⛔ 视图不读这两个字段（行上已由 `_applyBigSecondR10NoBuy` 覆盖标签 + `noBuyRowGray`）。
+     */
+    r10SecondNoBuyNames: bigSecondNoBuyNames,
+    r10SecondNoBuyInfo: bigSecondGate
   };
 }
 
