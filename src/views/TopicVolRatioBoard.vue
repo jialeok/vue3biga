@@ -277,6 +277,31 @@
                   :head-text="top30Huddle.block.topic"
                 />
               </div>
+              <!-- ★★ [NEW-DRAGON-LIFE 2026-11-28 用户口径] 第三十七条【新龙续命】买点：
+               用户原话「范围对的空仓提醒日 / 标签是新龙续命 / 同日多票，原版可以分开，票重复不要紧，
+               这样就能相互印证，更加说明这只票的可靠性。简洁版可以合并成一只，并同时打上标签。
+               注意说明文字也一起写上。」
+               ⛔ 渲染在 .tvrb-buy-list 之外（父级 filter: grayscale(1) 会把今天要持有的票也灰掉）。
+               ⚠️ null ⇒ 不渲染（非空仓日 / 昨日没买 / 今日不是龙一 / 更高级规则让路，§10）。 -->
+              <div
+                v-if="newDragonLife"
+                class="tvrb-new-dragon-life-buy"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray }"
+              >
+                <div class="tvrb-new-dragon-life-label tvrb-selectable">
+                  新龙续命 · 买点（第三十七条 · 昨日买过、今日仍是龙一）
+                </div>
+                <div class="tvrb-new-dragon-life-note tvrb-selectable">
+                  今天本来建议空仓（第一题材平均竞价量比 &lt; 25、整段灰化），
+                  但这一只是你【昨天买点侧已经买过】、今天【仍然是所在题材龙一】的票 ⇒
+                  龙头还在续命 ⇒ 今天继续持有（不是今天新开仓）。
+                  ⛔ 昨天二次确认退潮的题材不续命；越红线 / 逼近红线（三十四 / 三十六）优先级更高，命中时本块让路。
+                </div>
+                <TvrbBuyBlock
+                  :block="newDragonLife"
+                  :head-text="newDragonLife.block.topic"
+                />
+              </div>
               <!-- ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条【弱势切抱团】买点：
                用户原话「…从灰色的题材块中核对 20 日涨幅，看有没有排名前三的股票在其中（同题材），
                如果有再重新选入，因为行情差时，选市场龙头（也是题材龙头），叫弱势切抱团。
@@ -593,6 +618,9 @@ const {
   // ★★ [CATCH-UP 2026-10-27 用户口径] 第三十一条「补涨题材」买点块
   //   （渲染在灰化容器【之外】、排在弱势切抱团之后 —— 低位补涨的强度低于市场龙头抱团）
   catchUp,
+  // ★★ [NEW-DRAGON-LIFE 2026-11-28 用户口径] 第三十七条「新龙续命」买点块
+  //   （渲染在灰化容器【之外】—— 空仓日里昨日买过、今日仍是龙一的续命票）
+  newDragonLife,
   summaryText,
   rulesLines,
   toggleExpand,

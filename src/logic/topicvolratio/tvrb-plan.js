@@ -7,7 +7,7 @@
 //   opts.dataGateBlocked 为真时，必须走 _clearBuySideForDataGate 把买点侧清空；
 //   ⛔ 只在视图层 v-if 挡不住未来新增的买点通道。
 
-import { TVRB_MIN_COUNT, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_TOP_N, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TVRB_CASH_ALERT_NONE, NEW_DRAGON_TAG, NEW_DRAGON_LOOKBACK_DAYS, NEW_DRAGON_CERTIFY_TOP_N, NEW_DRAGON_FAMILY_MIN_COUNT, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, TVRB_ABNORMAL_NONE, SECOND_TOPIC_VOLWEAK_NO_BUY_TAG, TOP30_HUDDLE_RULE_NO, TOP30_HUDDLE_TAG, EBB_SECOND_RULE_NO, EBB_TOPIC_BAN_TAG } from './tvrb-constants.js';
+import { TVRB_MIN_COUNT, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_TOP_N, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TVRB_CASH_ALERT_NONE, NEW_DRAGON_TAG, NEW_DRAGON_LOOKBACK_DAYS, NEW_DRAGON_CERTIFY_TOP_N, NEW_DRAGON_FAMILY_MIN_COUNT, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, TVRB_ABNORMAL_NONE, SECOND_TOPIC_VOLWEAK_NO_BUY_TAG, TOP30_HUDDLE_RULE_NO, TOP30_HUDDLE_TAG, EBB_SECOND_RULE_NO, EBB_TOPIC_BAN_TAG, NEW_DRAGON_LIFE_RULE_NO } from './tvrb-constants.js';
 import { pickFamilyNewDragon, splitTopicSegs, isLineageTopic } from './new-dragon-family.js';
 import { _normTopic, _sameTopicLoose, makeEbbTopicBan, ebbBanTopicsOf, buildLeaderEventTimeline, LEADER_EVENT_BASIS, _num, _pct2, _streakWord, _secondTopicLeaderInTop10, _range10RankMapOf, _closeRankOf, _rankTopEntries, _topicTop10Hits, _windowTextOf, _todayRankPhrase, _rankLabelOf, _oldTopicNameOf, _oldTopicBasisOf, _isBuyablePick } from './tvrb-utils.js';
 import { detectEbbDay, secondEbbTopicOfPrevDay, buildEbbDayRecord } from './tvrb-ebb.js';
@@ -15,6 +15,10 @@ import { _applyPrevEbbSecondNoBuy, _applyLeaderLimitDownNoBuy, _applySecondTopic
 // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径 · 规则手册八修] 第二十八条「次日买」与「次日承接块」
 //    独立成一个模块（⛔ 不并进 tvrb-blocks 的当天买通道）：本文件的职责只是**接线**。
 import { markNextDayBuy, finalizeNextDayBuy } from './nextday-buy.js';
+// ★★ [NEW-DRAGON-LIFE 2026-11-28 用户口径] 第三十七条【新龙续命】：
+//   空仓日里，昨日买点侧真的买了、今日仍是所在题材龙一的票 ⇒ 续命买入。
+//   独立成模块（与 nextday-buy 同一分层：跨日语义不并进当天买通道）。
+import { buildNewDragonLifeBlock, applyNewDragonLifeSellNote } from './new-dragon-life.js';
 // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条「监管异动 · 十日涨幅硬上限」的事实判定
 //   （纯函数：把「总龙一昨日/今日十日涨幅 + 会被选中的票的十日涨幅」判成一块空仓标语）。
 //   ⛔ 阈值 / 文案全在 abnormal-10d.js + tvrb-constants.js，本文件只负责【注入事实】与【收口】。
@@ -829,7 +833,10 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       catchUp: null,
       // ★★ [RULE-35 2026-11-18 用户口径] 第三十五条：30日涨幅抱团（补涨让路版）。
       //   ⚠️ 与 weakHuddle / catchUp 同一理由——买点槽位必须齐全，否则 _buyBlocksOf 会漏掉它。
-      top30Huddle: null
+      top30Huddle: null,
+      // ★★ [NEW-DRAGON-LIFE 2026-11-28 用户口径] 第三十七条：新龙续命（昨日买过、今日仍是龙一）。
+      //   与 top30Huddle 同一理由挂在买点对象里：四个装饰器经 _buyBlocksOf 遍历取块（§6）。
+      newDragonLife: null
     },
     sell: [],
     excludedTopics: [],
@@ -870,6 +877,10 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     //   ★ 它命中时【三十 / 三十一 / 三十二 三条全部不出票】（用户拍板，catalog C10）。
     //   ⚠️ §11：不命中 / 判不出 ⇒ 恒为 null ⇒ 三条原链路逐字不变。
     top30Huddle: null,
+    // ★★ [NEW-DRAGON-LIFE 2026-11-28 用户口径] 第三十七条【新龙续命】买点块：
+    //   空仓日里，昨日买点侧真的买了、今日仍是所在题材龙一的票 ⇒ 续命买入（渲染在灰化容器之外）。
+    //   不命中 / 判不出 / 非空仓日 ⇒ 恒为 null（视图 v-if 不渲染，§10 不拿空壳冒充结论）。
+    newDragonLife: null,
     // ★★ [LEADER-LIMITDOWN 2026-11-02 用户口径] 第三十二条【题材龙一竞价跌停 ⇒ 切抱团】的事实：
     //   `{topic, name, code, aucPct, aucPctText, count, avgText}` —— 由扫描循环在发现
     //   「排名第一的入选题材的龙一竞价跌停」时写下；没命中 ⇒ 恒为 null（§11 零行为变化）。
@@ -2165,6 +2176,47 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       '入选票照常列出但整块灰化、动作标签一律【' + EBB_NO_BUY_TAG + '】；其它题材不变。');
   }
 
+  // ★★ [NEW-DRAGON-LIFE 2026-11-28 用户口径] 第三十七条【新龙续命】：
+  //   空仓日里，昨日买点侧真的买了、今日仍是所在题材龙一的票 ⇒ 续命买入。
+  //   ⛔ 必须排在【所有买点改写之后】（退潮 / 分歧 / 空仓提醒 / 三十 / 三十一 / 三十二 / 三十五 都算完），
+  //      且排在【买点名单组装之前】：它今天真要买 ⇒ 要进 buyNames（卖点侧才能标【持有】）。
+  //   ⛔ 优先级：三十四（全场空仓，稍后 _applyAbnormalSweep 会把它清空）> 三十六（逼近红线，稍后逐行覆盖）
+  //      > 二十六（昨日退潮题材，下面传 prevBannedTopics 让它让路）> 本条 > 十九（空仓提醒本身）。
+  //   ⚠️ 只在【常规空仓提醒】这一条分支生效：退潮首日（out.ebb && !ebbSecondRegular）/ 总龙首次分歧日
+  //      各有自己的买点通道，⛔ 不许与本条同时输出买点（与第三十 / 三十一 / 三十五同一条分支判断）。
+  const _nlRegularCashAlert = (out.cashAlert && out.cashAlert.show) &&
+    !divergeActive && !(out.ebb && !ebbSecondRegular) &&
+    // ⚠️ 跨日输入必须显式由调用方提供：undefined = 这个调用方压根不接第三十七条（如单测桩 / 旧调用），
+    //    此时整条规则【静默不参与】，⛔ 不写「判不出」噪声；null = 接入了但存档没读到（要如实说明）。
+    o.prevTvrbBuyNames !== undefined;
+  if (_nlRegularCashAlert) {
+    const _nl = buildNewDragonLifeBlock({
+      cashAlertShow: true,
+      // ⚠️ 只认【上一交易日题材量比买点侧】的名单（collectBuyNames 可买口径），
+      //    ⛔ 不是 ctx.prevBuyNames（那是决策看板买点，口径不同）。
+      prevBuyNames: o.prevTvrbBuyNames || null,
+      buyDragonMap: buyDragonMap,
+      list: list,
+      skipBuyNames: buySkipNames,
+      prevBannedTopics: prevSecondEbb ? [prevSecondEbb.topic] : [],
+      coreRes: coreRes,
+      date: String(o.date || ''),
+      prevDate: String(o.prevDate || '')
+    });
+    if (_nl.block) {
+      out.newDragonLife = _nl.block;
+      // §6：同一份对象挂进买点槽位（四个装饰器经 _buyBlocksOf 遍历，⛔ 别在组合式里再铺一遍）
+      out.buy.newDragonLife = out.newDragonLife;
+      out.notes.push('⚠️【第' + NEW_DRAGON_LIFE_RULE_NO + '条 · 新龙续命】今天建议空仓，但 ' +
+        (_nl.names || []).join('、') +
+        ' 是昨日买点侧已经买过、今天仍是所在题材龙一的票 ⇒ 龙头还在续命 ⇒ 继续持有（不是今天新开仓）；' +
+        '其它票照旧空仓。⚠️ 同一只票若也被别的规则选中，会各有一行、各带自己的标签（相互印证）。');
+    } else if (_nl.reason === 'no-prev') {
+      out.notes.push('⚠️【第' + NEW_DRAGON_LIFE_RULE_NO + '条 · 新龙续命】上一交易日买点侧存档未读到 ⇒ ' +
+        '本次【判不出】有没有续命票（§10：判不出 ≠ 昨天没买，也 ≠ 今天一定空仓）。');
+    }
+  }
+
   // ── ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条 · 第二段：造出那【一只】十日涨幅候补 ──────
   //   触发条件（用户两段原话合起来）：
   //     ① 排名【第一】的入选题材平均量比 < 25（= 空仓提醒已命中）——「也一率作废，进入候选的是
@@ -2597,6 +2649,12 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   if (out.top30Huddle) {
     (out.top30Huddle.picks || []).forEach(function(p) { if (p && p.name) out.buyNames.add(p.name); });
   }
+  // ★★ [NEW-DRAGON-LIFE 2026-11-28 用户口径] 第三十七条续命票是【今天真要持有 / 买入】的票 ⇒ 进买点名单。
+  //   理由与上面第三十五条逐字相同（同一不变式）：它若昨天已在卖点侧候选里，
+  //   卖点侧要标【持有】而不是「竞价清仓」—— 否则屏幕上会同时出现「今天续命买」和「今天清仓」。
+  if (out.newDragonLife) {
+    (out.newDragonLife.picks || []).forEach(function(p) { if (p && p.name) out.buyNames.add(p.name); });
+  }
 
   // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条【监管异动 · 十日涨幅硬上限】——
   //   ★ 为什么收口放在【这里】（所有买点通道都建完之后、卖点段之前）：
@@ -2736,6 +2794,13 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     //   放最后 ⇒ 覆盖退潮 / 跟龙 / 分歧等所有既有动作改写（异动是最高优先级的「今天必须出」），
     //   并把被覆盖的原动作写进逐行说明，方便对照。
     _applyDeviationSellOverlay(out, { devAuto: _devAuto, basis: _devBasis });
+    // ★★ [NEW-DRAGON-LIFE 2026-11-28 用户口径 · 铁律 4] 卖点侧说明同步：
+    //   续命那几只票在卖点侧要写明「昨日已买、今日仍是龙一 ⇒ 续命持有，不是今天新开仓」。
+    //   ⛔ 必须排在 _applyEbbSellRules / _applyDeviationSellOverlay 【之后、之前】的权衡：
+    //      放在【异动卖之后】会被它覆盖掉（三十四·b / 三十六优先级更高，本来就该覆盖）；
+    //      这里放在最后，仅在【没有被更高优先级改写】的行上补说明（下面函数自己按名字匹配，
+    //      若该行已被改成「异动卖」，说明里已写明原因，续命说明不再追加 —— 见函数实现里的判断）。
+    applyNewDragonLifeSellNote(out);
   }
 
   // ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ **硬空仓**（fail-closed）。
@@ -2809,6 +2874,10 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   // ★★ [RULE-35 2026-11-18] 30日涨幅抱团那一只同理（今天唯一还能买的就是它）。
   //   与第三十/三十一条同一条口径：_pickSeen 按名字去重，不会把「实际能下单的只数」数多。
   if (out.top30Huddle) _countUnique(out.top30Huddle.picks);
+  // ★★ [NEW-DRAGON-LIFE 2026-11-28 用户口径] 第三十七条续命票也是【今天真要持有 / 买入】的票 ⇒ 计数。
+  //   同一只票通常也在下面的灰化块里（挂着【分歧日不买】）—— _pickSeen 按名字去重，
+  //   且灰块那行 `_isBuyablePick` 为 false，所以这里数的是「真正能下单的只数」，不会重复。
+  if (out.newDragonLife) _countUnique(out.newDragonLife.picks);
   out.pickCount = _pickSeen.size;
   // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条：监管异动日「不再选票」⇒ 一律按 0 只计。
   //   ⚠️ 票【仍然列在屏幕上】（用户「不用去掉」），只是不计入「选出 N 只」——
@@ -2936,6 +3005,8 @@ export function _applyAbnormalSweep(out, opts) {
   out.weakHuddle = null;
   out.catchUp = null;
   out.top30Huddle = null;
+  // ★★ [NEW-DRAGON-LIFE] 空仓 / 数据缺失 ⇒ 续命槽位一起清空（fail-closed）。
+  out.newDragonLife = null;
   out.ebbNodeNote = null;
   // ★★ [NEXT-DAY-BUY 2026-11-27] 异动日【全场空仓】⇒ 今天不买、明天的承接块也不许出现。
   out.nextDayCarry = null;
@@ -2947,6 +3018,8 @@ export function _applyAbnormalSweep(out, opts) {
     out.buy.weakHuddle = null;
     out.buy.catchUp = null;
     out.buy.top30Huddle = null;
+    // ★★ [NEW-DRAGON-LIFE] 续命槽位的第二份引用一起清空。
+    out.buy.newDragonLife = null;
   }
   out.buyNames = new Set();
 
@@ -2996,12 +3069,13 @@ export function _applyDeviationNearRule(out, opts) {
   const basis = String(o.basis || '');
 
   const slots = [out.ebbBuy, out.divergeBuy, out.newDragon, out.nextDayCarry, out.range10Backup,
-    out.weakHuddle, out.catchUp, out.top30Huddle];
+    out.weakHuddle, out.catchUp, out.top30Huddle, out.newDragonLife];
   (out.blocks || []).forEach(function (b) { slots.push(b); });
   if (out.buy) {
     slots.push(out.buy.heavy, out.buy.light, out.buy.noYizi, out.buy.smallTopic,
       out.buy.bigTopic, out.buy.ebbSecond, out.buy.newDragon, out.buy.nextDayCarry,
-      out.buy.range10Backup, out.buy.weakHuddle, out.buy.catchUp, out.buy.top30Huddle);
+      out.buy.range10Backup, out.buy.weakHuddle, out.buy.catchUp, out.buy.top30Huddle,
+      out.buy.newDragonLife);
   }
 
   const hit = [];
@@ -3139,6 +3213,8 @@ export function _clearBuySideForDataGate(out) {
   out.weakHuddle = null;
   out.catchUp = null;
   out.top30Huddle = null;
+  // ★★ [NEW-DRAGON-LIFE] 空仓 / 数据缺失 ⇒ 续命槽位一起清空（fail-closed）。
+  out.newDragonLife = null;
   out.ebbNodeNote = null;
   // ★★ [NEXT-DAY-BUY 2026-11-27] 第二十八条的【次日承接】块同样是「今天要买」的通道
   //   ⇒ 数据缺失日必须一起清掉（否则那份名单会绕过闸门漏到屏幕上）。
@@ -3165,6 +3241,8 @@ export function _clearBuySideForDataGate(out) {
     out.buy.weakHuddle = null;
     out.buy.catchUp = null;
     out.buy.top30Huddle = null;
+    // ★★ [NEW-DRAGON-LIFE] 续命槽位的第二份引用一起清空。
+    out.buy.newDragonLife = null;
   }
   out.buyNames = new Set();
   out.pickCount = 0;

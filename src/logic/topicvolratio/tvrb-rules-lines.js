@@ -4,7 +4,7 @@
 // ⛔ 文案里的数字必须用 tvrb-constants.js 的常量拼接，不许写死 ——
 //   否则用户点开规则看到的条文与实际选股不一致（那比没有说明更坏）。
 
-import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_NO_BUY_TAG, EBB_SECOND_BUY_TAG, EBB_TOPIC_BAN_TAG, CASH_NO_BUY_TAG, WEAK_HUDDLE_TAG, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, NEW_DRAGON_TAG, RANGE10_BACKUP_TAG, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_TOPIC_BAN_TAG, ABNORMAL_TOPIC_BAN_DAY_OFFSET, TOP30_HUDDLE_RULE_NO, TOP30_HUDDLE_TAG, TOP30_HUDDLE_TOP_N, TOP30_HUDDLE_PICK_COUNT } from './tvrb-constants.js';
+import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_NO_BUY_TAG, EBB_SECOND_BUY_TAG, EBB_TOPIC_BAN_TAG, CASH_NO_BUY_TAG, WEAK_HUDDLE_TAG, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, NEW_DRAGON_TAG, RANGE10_BACKUP_TAG, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_TOPIC_BAN_TAG, ABNORMAL_TOPIC_BAN_DAY_OFFSET, TOP30_HUDDLE_RULE_NO, TOP30_HUDDLE_TAG, TOP30_HUDDLE_TOP_N, TOP30_HUDDLE_PICK_COUNT, NEW_DRAGON_LIFE_RULE_NO, NEW_DRAGON_LIFE_TAG } from './tvrb-constants.js';
 // ★★ [DEV-RULE 2026-11-25] 手册第三十四条换官方口径 / 新增三十六、三十六·b ——
 //   阈值与标签一律取自 deviation-rule-facts（⛔ 手册里不许写死 100 / 200 / 0.9 这些数字）。
 import {
@@ -701,6 +701,23 @@ export function buildTvrbRulesLines() {
       '　· ⛔ 不动分组、不改客观数据（涨幅 / 量比 / 排名一律不动）、不删行。' +
       '★ 为什么买点和卖点要分开两条：买点侧是「今天别买它」，卖点侧是「手里有的今天必须走」——' +
       '同一个事实，两个方向的动作，⛔ 不能合成一条。',
+    // ── ★★ [NEW-DRAGON-LIFE 2026-11-28 用户口径] 新增第三十七条：新龙续命。
+    '三十七、【' + NEW_DRAGON_LIFE_TAG + '】（第' + NEW_DRAGON_LIFE_RULE_NO + '条 · 只在空仓提醒日生效）' +
+      '★ 用户原话（逐条确认）：「1.范围对的空仓提醒日 2.标签是新龙续命 3.同日多票，原版可以分开，' +
+      '票重复不要紧，这样就能相互印证，更加说明这只票的可靠性。简洁版可以合并成一只，并同时打上标签。' +
+      '注意说明文字也一起写上。4.你说的优先级基本对的。」' +
+      '★ 触发：今天命中第十九条【空仓提醒】（第一题材平均竞价量比 < ' + TVRB_CASH_ALERT_AVG_VR +
+      '、整段灰化、建议空仓），但有一只票同时满足 —— ' +
+      '① 【上一交易日买点侧真的买了】（可买口径，灰行不算）；' +
+      '② 今天它【仍然是所在题材的龙一】（9:26 竞价口径，与选股同一把尺子）。' +
+      '⇒ 说明它没有跟着退潮、龙头还在续命 ⇒ 今天不空仓、继续持有（不是今天新开仓）。' +
+      '★ 同日多票：原版各占一行、分开显示；同一只票若也被别的规则选中，会各有一行、各带自己的标签' +
+      '（来源不同 = 相互印证，⛔ 不因重复而去掉）。简洁版把同名票合并成一行，并同时显示多枚标签。' +
+      '★ 优先级：三十四（全场空仓）> 三十六（逼近红线）> 二十六（昨日二次确认退潮的题材次日禁入）> ' +
+      '本条 > 十九（空仓提醒）。高优先级命中时本条整块让路；本条命中时才由续命票顶掉「空仓」。' +
+      '★ 停牌不选；竞价一字涨停照常选进并挂【' + AUCTION_YIZI_WAIT_TAG + '】。' +
+      '★ 买点 / 卖点两侧说明同步：买点行写「昨日买过、今日仍是龙一 ⇒ 续命持有」，' +
+      '卖点侧对应票标【' + HOLD_TAG + '】并写明同一原因（⛔ 不许一侧说续命、另一侧说清仓）。',
     '三十三、【历史案例对照 · 用户口径复盘】' +
       '★ 用法：每次口径调整都对应下面某一天的真实数据。复核时先看是哪一天的哪一条，再看判定是否一致。' +
       '★（本节由用户要求长期维护：以后每次讨论到的实盘案例都追加在这里。）',

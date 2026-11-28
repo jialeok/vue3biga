@@ -282,12 +282,14 @@ describe('[ABNORMAL-ALL 接线静态锁] 漏一处 ⇒ 异动日仍显示彩色�
     expect(plan).not.toContain('_abnLeaderName');
   });
 
-  it('七个独立买点容器全挂上全灰类，CSS 有定义', () => {
+  it('八个独立买点容器全挂上全灰类，CSS 有定义', () => {
     const v = readFileSync('src/views/TopicVolRatioBoard.vue', 'utf8');
     // ★★ [RULE-35-RENDER 2026-11-19] 6 → 7：第三十五条「30日涨幅抱团」那一块同样是
     //   渲染在灰化容器【之外】的独立买点容器 ⇒ 监管异动日它也必须一起灰
     //   （漏挂 = 异动日屏幕上仍有一块彩色的「可以买」，用户会照着下单）。
-    expect((v.match(/'tvrb-abnormal-gray': abnormalGray/g) || []).length).toBe(7);
+    // ★★ [NEW-DRAGON-LIFE 2026-11-28] 7 → 8：第三十七条「新龙续命」同理
+    //   （异动日全场空仓 ⇒ 续命块也必须一起灰，由 _applyAbnormalSweep 置 null + 这里挂灰类双保险）。
+    expect((v.match(/'tvrb-abnormal-gray': abnormalGray/g) || []).length).toBe(8);
     const css = readFileSync('src/assets/css/topic-vol-ratio-board.css', 'utf8');
     expect(css).toContain('.tvrb-abnormal-gray');
     expect(css).toContain('grayscale(1)');

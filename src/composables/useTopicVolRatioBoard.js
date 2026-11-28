@@ -2421,6 +2421,12 @@ export function useTopicVolRatioBoard() {
         // ★ [EBB-D1 2026-10-21] 上一交易日（日期链在组合式算好注入，规则层保持纯函数）——
         //   「昨日二次确认退潮 ⇒ 次日禁入买点侧」（第二十六条）用它去 ebbHistory 里找昨日那一行。
         prevDate: pd || '',
+        // ★★ [NEW-DRAGON-LIFE 2026-11-28 用户口径] 第三十七条【新龙续命】的跨日输入：
+        //   上一交易日【题材量比买点侧】真的买了哪些票（`collectBuyNames` 可买口径，灰行不算）。
+        //   ⚠️ 日期核对红线（与上面几份跨日输入同款）：不是这一天的 ⇒ 传 null（§10 不拿旧日期顶替）。
+        prevTvrbBuyNames: (prevBuyPlanNames.value && prevBuyPlanNames.value.date === pd)
+          ? prevBuyPlanNames.value.names
+          : null,
         // ★★ [SWITCH 2026-10-22] 第二十八条「新龙 / 新题材切换日」的三个输入：
         //   prevPrevDate    = 前两个交易日（切换日判据：二次确认退潮正好发生在 D，今天 = D+2）；
         //   top5HistoryEver = 近 20 个交易日【上过前五】的票（判「首次上榜」）；null ⇒ 判不出 ⇒ 不收紧；
@@ -3788,7 +3794,7 @@ export function useTopicVolRatioBoard() {
    *   它是题材量比太小被作废之后【今天真正要买】的那一只，不能被父级 grayscale 吞掉。
    *   不需要候补 / 选不出（含数据未到）⇒ null ⇒ 视图 v-if 不渲染（§10 不拿空壳冒充结论）。
    */
-  const range10Backup = computed(() => (displayPlan.value && displayPlan.value.range10Backup) || null);
+  const range10Backup = computed(() => _compactDropMerged((displayPlan.value && displayPlan.value.range10Backup) || null));
   /**
    * ★★ [RULE-35-RENDER 2026-11-19 用户三次报障的决定性一环] 第三十五条【30日涨幅抱团】那一块。
    *
@@ -3804,7 +3810,58 @@ export function useTopicVolRatioBoard() {
    *   因为第三十五条命中时 三十/三十一/三十二 三条全部让路，它就是今天【唯一】能买的那一只。
    *   判不出 / 同大类不在前三 ⇒ null ⇒ 视图 v-if 不渲染（§10 不拿空壳冒充结论）。
    */
-  const top30Huddle = computed(() => (displayPlan.value && displayPlan.value.top30Huddle) || null);
+  /**
+   * ★★ [NEW-DRAGON-LIFE 2026-11-28 用户口径] 第三十七条【新龙续命】买点块
+   * （空仓日里，昨日买点侧真的买了、今日仍是所在题材龙一的票）。
+   * ⚠️ 与 top30Huddle / weakHuddle 同一约定：它【不在 blocks 里】，视图必须渲染在灰化容器之外。
+   *   null ⇒ 视图 v-if 不渲染（§10 不拿空壳冒充结论）。
+   */
+  const newDragonLife = computed(function() {
+    const p = displayPlan.value;
+    const raw = (p && p.newDragonLife) || null;
+    if (!raw) return null;
+    if (!compactOpen.value) return raw;   // 原版：分开显示（用户「票重复不要紧，相互印证」）
+    // 简洁版：把同一只票在其它【可买】extra 买点块里的标签并到这一行，并隐藏那些重复行。
+    //   ⛔ 只合并灰化容器之外的 extra 块；⛔ 不合并灰化块里的【分歧日不买】行（那是「不买」，合并会自相矛盾）。
+    const others = [p.top30Huddle, p.weakHuddle, p.catchUp, p.range10Backup];
+    const picks = (raw.picks || []).map(function(row) {
+      const nm = String((row && row.name) || '').trim();
+      const extra = [];
+      others.forEach(function(b) {
+        if (!b || !Array.isArray(b.picks)) return;
+        const hit = b.picks.find(function(x) { return x && String(x.name || '').trim() === nm; });
+        if (hit && hit.buyActionTag) {
+          extra.push({ tag: hit.buyActionTag, tone: hit.buyActionTone || '' });
+        }
+      });
+      return extra.length ? Object.assign({}, row, { extraActionTags: extra }) : row;
+    });
+    return Object.assign({}, raw, { picks: picks });
+  });
+  /** 简洁版：被第三十七条合并掉的票名（只在简洁模式下非空）。 */
+  const _compactMergedNames = computed(function() {
+    if (!compactOpen.value) return null;
+    const p = displayPlan.value;
+    const nl = p && p.newDragonLife;
+    if (!nl || !Array.isArray(nl.picks) || nl.picks.length === 0) return null;
+    const s = new Set();
+    nl.picks.forEach(function(x) {
+      const nm = String((x && x.name) || '').trim();
+      if (nm) s.add(nm);
+    });
+    return s.size > 0 ? s : null;
+  });
+  /** 简洁版合并：把已并进第三十七条那一行的票，从其它 extra 买点块里去掉（原版原样返回）。 */
+  function _compactDropMerged(block) {
+    const s = _compactMergedNames.value;
+    if (!s || !block || !Array.isArray(block.picks)) return block;
+    const kept = block.picks.filter(function(x) {
+      return !(x && s.has(String(x.name || '').trim()));
+    });
+    if (kept.length === block.picks.length) return block;
+    return Object.assign({}, block, { picks: kept, pickCount: kept.length });
+  }
+  const top30Huddle = computed(() => _compactDropMerged((displayPlan.value && displayPlan.value.top30Huddle) || null));
   /**
    * ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条【弱势切抱团】那一块（20日涨幅主板前三 ∧ 与退潮题材同题材）。
    * ⚠️ 与 ebbBuy / divergeBuy / newDragon / range10Backup 同一约定：它【不在 blocks 里】，
@@ -3812,7 +3869,7 @@ export function useTopicVolRatioBoard() {
    *   不能被父级 grayscale 吞掉；而且用户要求放在【最前面】。
    *   没有票进前三 / 判不出 ⇒ null ⇒ 视图 v-if 不渲染 ⇒ 就是纯空仓（§10 不拿空壳冒充结论）。
    */
-  const weakHuddle = computed(() => (displayPlan.value && displayPlan.value.weakHuddle) || null);
+  const weakHuddle = computed(() => _compactDropMerged((displayPlan.value && displayPlan.value.weakHuddle) || null));
   /**
    * ★★ [CATCH-UP 2026-10-27 用户口径] 第三十一条【补涨题材】那一块
    * （20日涨幅主板第 6~10 名里，灰色题材恰好占 2~3 只，且其中有连板票）。
@@ -3820,7 +3877,7 @@ export function useTopicVolRatioBoard() {
    *   并且排在【弱势切抱团之后】（两条看的是不同名次区间，同一天可能各出一只）。
    *   数量不达标 / 一只连板都没有 / 判不出 ⇒ null ⇒ 视图 v-if 不渲染（§10）。
    */
-  const catchUp = computed(() => (displayPlan.value && displayPlan.value.catchUp) || null);
+  const catchUp = computed(() => _compactDropMerged((displayPlan.value && displayPlan.value.catchUp) || null));
   /**
    * ★ [DIVERGE-GATE 2026-10-21] 分歧判定未就绪的门控旗（非 null ⇒ 买点侧渲染「判定计算中」占位、
    *   不渲染旧规则选票 —— 见 data computed 里门控条件的逐条注释）。判不出 / 已就绪 ⇒ null。
@@ -4084,7 +4141,9 @@ export function useTopicVolRatioBoard() {
       top30Huddle.value ? [top30Huddle.value] : [],
       weakHuddle.value ? [weakHuddle.value] : [],
       // ★★ [CATCH-UP 2026-10-27] 补涨题材同理（第三十一条，同样不在 blocks 里）
-      catchUp.value ? [catchUp.value] : []].forEach(function(arr) {
+      catchUp.value ? [catchUp.value] : [],
+      // ★★ [NEW-DRAGON-LIFE 2026-11-28] 第三十七条续命票也要抓分笔（同样不在 blocks 里）
+      newDragonLife.value ? [newDragonLife.value] : []].forEach(function(arr) {
       arr.forEach(function(b) {
         (b.picks || []).forEach(function(p) {
           if (p && p.name && !seen.has(p.name)) seen.set(p.name, String(p.code || ''));
@@ -4277,6 +4336,8 @@ export function useTopicVolRatioBoard() {
     weakHuddle,
     // ★★ [CATCH-UP 2026-10-27] 第三十一条「补涨题材」买点块
     catchUp,
+    // ★★ [NEW-DRAGON-LIFE 2026-11-28 用户口径] 第三十七条「新龙续命」买点块（渲染在灰化容器之外）
+    newDragonLife,
     divergePending,
     divergeWaitText,
     // ★★ [BUY-SETTLE 2026-10-31] 买点侧 7 项异步输入未全部落地 ⇒ 视图收起选票、只挂占位

@@ -94,6 +94,7 @@
            ⛔ 旗子由 Logic 层给（p.noBuyRowGray），模板零判定；⛔ 不灰整个题材块
            （同题材其它票照常买，用户原话「是这只股票范围灰色块（非题材）」）。 -->
       <div
+        v-if="!p.compactHide"
         class="tvrb-row"
         :class="{ 'tvrb-row-nobuy-gray': p.noBuyRowGray }"
       >
@@ -236,6 +237,15 @@
           class="tvrb-action"
           :class="'tvrb-action-' + p.buyActionTone"
         >{{ p.buyActionTag }}</span>
+        <!-- ★★ [NEW-DRAGON-LIFE 2026-11-28 用户口径] 简洁版合并后叠加的其它规则标签：
+             同一只票被多条规则同时选中 ⇒ 原版各占一行（相互印证）；简洁版并成一行、标签并列。
+             文案 / 配色档全由 Logic 层给（§21 模板零计算）；没有就是空数组，不渲染。 -->
+        <span
+          v-for="(t, ti) in (p.extraActionTags || [])"
+          :key="'extra-tag-' + ti"
+          class="tvrb-action"
+          :class="'tvrb-action-' + (t.tone || 'weakhuddle')"
+        >{{ t.tag }}</span>
         <!-- 【持有】= 上交易日也在买点里 → 强势股（Logic 层已与仓位槽去重，同一行不会两个【持有】） -->
         <span
           v-if="p.holdTag"
@@ -262,7 +272,7 @@
       <!-- 分笔明细面板（与「分笔买卖」看板的股票展开图【同一个组件、同一段文字】）。
            §10：还没抓 / 没数据时，不假装面板是空的 —— 如实显示状态（⛔ 不留一片空白）。 -->
       <div
-        v-if="penOpenSet.has(p.name)"
+        v-if="!p.compactHide && penOpenSet.has(p.name)"
         class="tvrb-pen-panel"
       >
         <TbbPenPanel

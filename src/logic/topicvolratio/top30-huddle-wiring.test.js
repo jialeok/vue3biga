@@ -212,7 +212,9 @@ describe('第三十五条 · 渲染通道五件套（判定 / 槽位 / 渲染 / 
   const YIZI = fs.readFileSync(path.join(ROOT, 'src/logic/topicvolratio/auction-yizi-tag.js'), 'utf8');
 
   it('组合式：有 top30Huddle computed，并进了 tickTargets + 返回对象', () => {
-    expect(COMPOSABLE).toContain('const top30Huddle = computed(() => (displayPlan.value && displayPlan.value.top30Huddle) || null);');
+    // ★★ [NEW-DRAGON-LIFE 2026-11-28] 简洁版合并：top30Huddle 的 computed 外面套了 _compactDropMerged
+    //   （只在简洁模式下把已并进第三十七条那一行的同名票从本块剔除；原版原样返回）。
+    expect(COMPOSABLE).toContain('const top30Huddle = computed(() => _compactDropMerged((displayPlan.value && displayPlan.value.top30Huddle) || null));');
     expect(COMPOSABLE).toContain('top30Huddle.value ? [top30Huddle.value] : [],');
     expect(COMPOSABLE).toContain('    top30Huddle,\n');
   });
