@@ -1,1 +1,290 @@
-PCEtLQogIFR2cmJEZXZUcmVuZC52dWUg4oCUIOOAjOWumOaWueWBj+emu+WAvCDCtyA1IOaXpei2i+WKv+OAjeWxleW8gOWbvu+8iOWPquWcqOeUqOaIt+eCueW8gOW+veagh+aXtuaJjeaMgui9ve+8iQoKICDjgJDnlKjmiLflj6PlvoQgMjAyNi0xMS0yOOOAkQogICAg44CM5Zyo6aKY5p2Q6YeP5q+U55qE6YCJ6IKh5L6n55qE5Lmw54K55ZKM5Y2W54K55L6n55qE6IKh56Wo5LiL6Z2i5re75Yqg5a6Y5pa55YGP56a75YC855qE6LaL5Yq/5Zu+77yM5LqU5pel55qE4oCm4oCmCiAgICAgIOS4iumdouaYr+ernuS7t+WPo+W+hO+8jOS4i+mdouaYr+aUtuebmOWPo+W+hOOAguS6lOaXpeabsue6v+Wbvu+8jOi/nuWcqOS4gOi1t+OAguavlOWmguWwj+agh+etvuaYryAxMCDml6XvvIzlsLHlgZoKICAgICAgMTAg5pel5YGP56a75YC855qE4oCm4oCm5aaC5p6c6YC86L+R57qi57q/55So5qmZ6Imy77yM6Kem5Y+R55So57qi6Imy44CC44CNCgogIOOAkOiBjOi0o+i+ueeVjO+8iMKnMyAvIMKnMjHvvInjgJEKICAgIMK3IOacrOe7hOS7tuWPqui0n+i0o+OAkOeUu+OAke+8mueCueS9jeOAgeminOiJsuaho+OAgee6oue6v+OAgeaXpeacn+WFqOmDqOeUsSBMb2dpYyDlsYIKICAgICAgYGxvZ2ljL2F1Y3Rpb24vZGV2aWF0aW9uLXRyZW5kLmpzYCDnrpflpb3vvIzmqKHmnb/ph4zmsqHmnInku7vkvZXpmIjlgLzliKTmlq3vvJsKICAgIMK3IOWPluaVsOi1sCBMb2dpYyDlsYIgYGxvYWREZXZpYXRpb25UcmVuZCgpYO+8iOWGhemDqOWGjei1sCBEYXRhIOWxgu+8ie+8jOKblCDnu4Tku7bkuI3norAgU3VwYWJhc2XvvJsKICAgIMK3IOm7mOiupOaUtui1t++8mueItue7hOS7tueUqCB2LWlmIOaOp+WItuaMgui9ve+8jOaJgOS7peOAjOayoeeCueW8gCA9IOmbtuivt+axguOAgembtiBET03jgIHpm7borqHnrpfjgI3vvJsKICAgIMK3IMKnMTDvvJror7vlpLHotKUgLyDliKTkuI3lh7og4oeSIOWmguWunuaYvuekuuWOn+WboO+8jOKblCDkuI3nlLvkuIDmnaEgMCDnur/lhpLlhYXjgIzmsqHmnInlvILliqjjgI3jgIIKCiAg44CQ5oCn6IO944CRCiAgICDCtyDmjILlnKjooYzkuIvmlrnvvIzkuIDlvKDlm77mnIDlpJogNSDkuKrngrkgw5cgMiDmnaHmm7Lnur8gPSAxMCDkuKrlnIbngrnvvIznuq8gU1ZHICsg57ud5a+55a6a5L2N77yMCiAgICAgIOS4jeW8leWFpeS7u+S9leWbvuihqOW6k+OAgeS4jeW7uuWumuaXtuWZqOOAgeS4jeW7uiBSZWFsdGltZe+8mwogICAgwrcgTG9naWMg5bGC5pyJ5Lya6K+d57yT5a2Y77ya5ZCM5LiA5Y+q56Wo5ZCM5LiA5aSp5ZCM5LiA56qX5Y+j5Y+N5aSN5bGV5byAID0gMCDor7fmsYIgMCDorqHnrpfjgIIKLS0+Cjx0ZW1wbGF0ZT4KICA8ZGl2IGNsYXNzPSJ0dnJiLWRldnQiPgogICAgPGRpdiBjbGFzcz0idHZyYi1kZXZ0LWhlYWQiPgogICAgICA8c3BhbiBjbGFzcz0idHZyYi1kZXZ0LXQiPuWumOaWueWBj+emu+WAvCA1IOaXpei2i+WKvzwvc3Bhbj4KICAgICAgPHNwYW4gY2xhc3M9InR2cmItZGV2dC13aW4iPnt7IHdpbmRvd0xhYmVsIH19PHRlbXBsYXRlIHYtaWY9InRoclRleHQiPiDCtyDnuqLnur8ge3sgdGhyVGV4dCB9fTwvdGVtcGxhdGU+PC9zcGFuPgogICAgICA8c3BhbgogICAgICAgIGNsYXNzPSJ0dnJiLWRldnQteCIKICAgICAgICB0aXRsZT0i5pS26LW36LaL5Yq/5Zu+IgogICAgICAgIEBjbGljay5zdG9wPSIkZW1pdCgnY2xvc2UnKSIKICAgICAgPsOXPC9zcGFuPgogICAgPC9kaXY+CgogICAgPGRpdgogICAgICB2LWlmPSJsb2FkaW5nIgogICAgICBjbGFzcz0idHZyYi1kZXZ0LXN0YXRlIgogICAgPgogICAgICDor7vlj5bkuK3igKYKICAgIDwvZGl2PgogICAgPGRpdgogICAgICB2LWVsc2UtaWY9ImVycm9yVGV4dCIKICAgICAgY2xhc3M9InR2cmItZGV2dC1zdGF0ZSB0dnJiLWRldnQtZXJyIgogICAgPgogICAgICB7eyBlcnJvclRleHQgfX0KICAgIDwvZGl2PgogICAgPHRlbXBsYXRlIHYtZWxzZT4KICAgICAgPCEtLSDkuIrljYrvvJrnq57ku7flj6PlvoQgLS0+CiAgICAgIDxkaXYgY2xhc3M9InR2cmItZGV2dC1zZWMiPgogICAgICAgIDxzcGFuIGNsYXNzPSJ0dnJiLWRldnQtY2FwIj7nq57ku7flj6PlvoQ8L3NwYW4+CiAgICAgICAgPGRpdiBjbGFzcz0idHZyYi1kZXZ0LXBsb3QiPgogICAgICAgICAgPHN2ZwogICAgICAgICAgICBjbGFzcz0idHZyYi1kZXZ0LXN2ZyIKICAgICAgICAgICAgdmlld0JveD0iMCAwIDEwMCA0MCIKICAgICAgICAgICAgcHJlc2VydmVBc3BlY3RSYXRpbz0ibm9uZSIKICAgICAgICAgICAgYXJpYS1oaWRkZW49InRydWUiCiAgICAgICAgICA+CiAgICAgICAgICAgIDxsaW5lCiAgICAgICAgICAgICAgdi1pZj0idGhyWSAhPT0gbnVsbCIKICAgICAgICAgICAgICBjbGFzcz0idHZyYi1kZXZ0LXRociIKICAgICAgICAgICAgICB4MT0iMCIKICAgICAgICAgICAgICA6eTE9InRoclkiCiAgICAgICAgICAgICAgeDI9IjEwMCIKICAgICAgICAgICAgICA6eTI9InRoclkiCiAgICAgICAgICAgIC8+CiAgICAgICAgICAgIDxwb2x5bGluZQogICAgICAgICAgICAgIHYtZm9yPSIoc2VnLCBzaSkgaW4gYXVjdGlvblNlZ21lbnRzIgogICAgICAgICAgICAgIDprZXk9IidhJyArIHNpIgogICAgICAgICAgICAgIGNsYXNzPSJ0dnJiLWRldnQtbGluZSIKICAgICAgICAgICAgICA6Y2xhc3M9Iid0dnJiLWRldnQtJyArIHNlZy50b25lIgogICAgICAgICAgICAgIDpwb2ludHM9InNlZy5wb2ludHMiCiAgICAgICAgICAgIC8+CiAgICAgICAgICA8L3N2Zz4KICAgICAgICAgIDxpCiAgICAgICAgICAgIHYtZm9yPSIocCwgaSkgaW4gYXVjdGlvbkRvdHMiCiAgICAgICAgICAgIDprZXk9IidhZCcgKyBpIgogICAgICAgICAgICBjbGFzcz0idHZyYi1kZXZ0LWRvdCIKICAgICAgICAgICAgOmNsYXNzPSIndHZyYi1kZXZ0LScgKyBwLnRvbmUiCiAgICAgICAgICAgIDpzdHlsZT0ieyBsZWZ0OiBwLnggKyAnJScsIHRvcDogcC55ICsgJyUnIH0iCiAgICAgICAgICAgIDp0aXRsZT0icC5kYXRlICsgJyDnq57ku7flj6PlvoQgJyArIChwLm9rID8gcC50ZXh0IDogJ+WIpOS4jeWHuicpIgogICAgICAgICAgLz4KICAgICAgICAgIDxzcGFuCiAgICAgICAgICAgIHYtZm9yPSIocCwgaSkgaW4gYXVjdGlvbkRvdHMiCiAgICAgICAgICAgIDprZXk9IidhdicgKyBpIgogICAgICAgICAgICBjbGFzcz0idHZyYi1kZXZ0LXYiCiAgICAgICAgICAgIDpjbGFzcz0iJ3R2cmItZGV2dC0nICsgcC50b25lIgogICAgICAgICAgICA6c3R5bGU9InsgbGVmdDogcC52eCArICclJywgdG9wOiBwLnkgKyAnJScgfSIKICAgICAgICAgID57eyBwLm9rID8gcC50ZXh0IDogJ+KAlCcgfX08L3NwYW4+CiAgICAgICAgPC9kaXY+CiAgICAgIDwvZGl2PgoKICAgICAgPCEtLSDkuIvljYrvvJrmlLbnm5jlj6PlvoQgLS0+CiAgICAgIDxkaXYgY2xhc3M9InR2cmItZGV2dC1zZWMiPgogICAgICAgIDxzcGFuIGNsYXNzPSJ0dnJiLWRldnQtY2FwIj7mlLbnm5jlj6PlvoQ8L3NwYW4+CiAgICAgICAgPGRpdiBjbGFzcz0idHZyYi1kZXZ0LXBsb3QiPgogICAgICAgICAgPHN2ZwogICAgICAgICAgICBjbGFzcz0idHZyYi1kZXZ0LXN2ZyIKICAgICAgICAgICAgdmlld0JveD0iMCAwIDEwMCA0MCIKICAgICAgICAgICAgcHJlc2VydmVBc3BlY3RSYXRpbz0ibm9uZSIKICAgICAgICAgICAgYXJpYS1oaWRkZW49InRydWUiCiAgICAgICAgICA+CiAgICAgICAgICAgIDxsaW5lCiAgICAgICAgICAgICAgdi1pZj0idGhyWSAhPT0gbnVsbCIKICAgICAgICAgICAgICBjbGFzcz0idHZyYi1kZXZ0LXRociIKICAgICAgICAgICAgICB4MT0iMCIKICAgICAgICAgICAgICA6eTE9InRoclkiCiAgICAgICAgICAgICAgeDI9IjEwMCIKICAgICAgICAgICAgICA6eTI9InRoclkiCiAgICAgICAgICAgIC8+CiAgICAgICAgICAgIDxwb2x5bGluZQogICAgICAgICAgICAgIHYtZm9yPSIoc2VnLCBzaSkgaW4gY2xvc2VTZWdtZW50cyIKICAgICAgICAgICAgICA6a2V5PSInYycgKyBzaSIKICAgICAgICAgICAgICBjbGFzcz0idHZyYi1kZXZ0LWxpbmUiCiAgICAgICAgICAgICAgOmNsYXNzPSIndHZyYi1kZXZ0LScgKyBzZWcudG9uZSIKICAgICAgICAgICAgICA6cG9pbnRzPSJzZWcucG9pbnRzIgogICAgICAgICAgICAvPgogICAgICAgICAgPC9zdmc+CiAgICAgICAgICA8aQogICAgICAgICAgICB2LWZvcj0iKHAsIGkpIGluIGNsb3NlRG90cyIKICAgICAgICAgICAgOmtleT0iJ2NkJyArIGkiCiAgICAgICAgICAgIGNsYXNzPSJ0dnJiLWRldnQtZG90IgogICAgICAgICAgICA6Y2xhc3M9Iid0dnJiLWRldnQtJyArIHAudG9uZSIKICAgICAgICAgICAgOnN0eWxlPSJ7IGxlZnQ6IHAueCArICclJywgdG9wOiBwLnkgKyAnJScgfSIKICAgICAgICAgICAgOnRpdGxlPSJwLmRhdGUgKyAnIOaUtuebmOWPo+W+hCAnICsgKHAub2sgPyBwLnRleHQgOiAn5Yik5LiN5Ye6JykiCiAgICAgICAgICAvPgogICAgICAgICAgPHNwYW4KICAgICAgICAgICAgdi1mb3I9IihwLCBpKSBpbiBjbG9zZURvdHMiCiAgICAgICAgICAgIDprZXk9IidjdicgKyBpIgogICAgICAgICAgICBjbGFzcz0idHZyYi1kZXZ0LXYiCiAgICAgICAgICAgIDpjbGFzcz0iJ3R2cmItZGV2dC0nICsgcC50b25lIgogICAgICAgICAgICA6c3R5bGU9InsgbGVmdDogcC52eCArICclJywgdG9wOiBwLnkgKyAnJScgfSIKICAgICAgICAgID57eyBwLm9rID8gcC50ZXh0IDogJ+KAlCcgfX08L3NwYW4+CiAgICAgICAgPC9kaXY+CiAgICAgIDwvZGl2PgoKICAgICAgPCEtLSDml6XmnJ/ovbQgKyDlm77kvosgLS0+CiAgICAgIDxkaXYgY2xhc3M9InR2cmItZGV2dC1mb290Ij4KICAgICAgICA8c3BhbiBjbGFzcz0idHZyYi1kZXZ0LWRhdGVzIj4KICAgICAgICAgIDxzcGFuCiAgICAgICAgICAgIHYtZm9yPSIoZCwgaSkgaW4gZGF0ZXMiCiAgICAgICAgICAgIDprZXk9IidkdCcgKyBpIgogICAgICAgICAgICBjbGFzcz0idHZyYi1kZXZ0LWRhdGUiCiAgICAgICAgICA+e3sgZC5zbGljZSg1KSB9fTwvc3Bhbj4KICAgICAgICA8L3NwYW4+CiAgICAgICAgPHNwYW4gY2xhc3M9InR2cmItZGV2dC1sZWdlbmQiPgogICAgICAgICAgPGkgY2xhc3M9InR2cmItZGV2dC1sZyB0dnJiLWRldnQtbGctbmVhciIgLz7pgLzov5EKICAgICAgICAgIDxpIGNsYXNzPSJ0dnJiLWRldnQtbGcgdHZyYi1kZXZ0LWxnLXNldmVyZSIgLz7op6blj5EKICAgICAgICA8L3NwYW4+CiAgICAgIDwvZGl2PgogICAgICA8ZGl2CiAgICAgICAgdi1pZj0ibm90ZVRleHQiCiAgICAgICAgY2xhc3M9InR2cmItZGV2dC1zdGF0ZSIKICAgICAgPgogICAgICAgIHt7IG5vdGVUZXh0IH19CiAgICAgIDwvZGl2PgogICAgPC90ZW1wbGF0ZT4KICA8L2Rpdj4KPC90ZW1wbGF0ZT4KCjxzY3JpcHQgc2V0dXA+CmltcG9ydCB7IHJlZiwgY29tcHV0ZWQsIHdhdGNoIH0gZnJvbSAndnVlJzsKaW1wb3J0IHsgbG9hZERldmlhdGlvblRyZW5kIH0gZnJvbSAnLi4vLi4vbG9naWMvYXVjdGlvbi9kZXZpYXRpb24tdHJlbmQuanMnOwoKY29uc3QgcHJvcHMgPSBkZWZpbmVQcm9wcyh7CiAgLyoqIOiCoeelqOWQje+8iGBzdG9ja19kYWlseV9wY3RgIC8gYG1hcmtldF9tZXRyaWNzYCDnmoTllK/kuIDplK7kuYvkuIDvvIkgKi8KICBzdG9jazogeyB0eXBlOiBTdHJpbmcsIHJlcXVpcmVkOiB0cnVlIH0sCiAgLyoqIDYg5L2N5Luj56CB77yI5Yaz5a6a5a+55bqU5ZOq5Y+q5a6Y5pa55oyH5pWw77yb56m6IOKHkiDnm7TmjqXlpoLlrp7miqXplJnvvIkgKi8KICBjb2RlOiB7IHR5cGU6IFN0cmluZywgZGVmYXVsdDogJycgfSwKICAvKiog5b695qCH5LiK5piv5ZOq5LiA5qGj77yaMTAgLyAzMO+8iOeUsSBMb2dpYyDlsYIgYGRldmlhdGlvbkJhZGdlV2luZG93YCDnu5nvvIzim5Qg57uE5Lu25LiN5Yik77yJICovCiAgZGF5czogeyB0eXBlOiBOdW1iZXIsIGRlZmF1bHQ6IDEwIH0sCiAgLyoqIOeql+WPo+acq+aXpe+8iOWOhuWPsuWkjeebmCA9IOmCo+S4gOWkqeeahOaXpeacn++8iSAqLwogIGFzT2Y6IHsgdHlwZTogU3RyaW5nLCBkZWZhdWx0OiAnJyB9Cn0pOwpkZWZpbmVFbWl0cyhbJ2Nsb3NlJ10pOwoKY29uc3QgbG9hZGluZyA9IHJlZih0cnVlKTsKY29uc3QgZXJyb3JUZXh0ID0gcmVmKCcnKTsKY29uc3QgdHJlbmQgPSByZWYobnVsbCk7CmxldCBfc2VxID0gMDsKCmNvbnN0IHdpbmRvd0xhYmVsID0gY29tcHV0ZWQoKCkgPT4gKHByb3BzLmRheXMgPT09IDMwID8gJzMwIOaXpeeql+WPoycgOiAnMTAg5pel56qX5Y+jJykpOwoKY29uc3QgcG9pbnRzT2YgPSAoa2V5KSA9PiAoKHRyZW5kLnZhbHVlICYmIEFycmF5LmlzQXJyYXkodHJlbmQudmFsdWVba2V5XSkpID8gdHJlbmQudmFsdWVba2V5XSA6IFtdKTsKY29uc3QgZGF0ZXMgPSBjb21wdXRlZCgoKSA9PiAoKHRyZW5kLnZhbHVlICYmIHRyZW5kLnZhbHVlLmRhdGVzKSB8fCBbXSkpOwpjb25zdCB0aHJUZXh0ID0gY29tcHV0ZWQoKCkgPT4gKHRyZW5kLnZhbHVlICYmIHRyZW5kLnZhbHVlLnRoclRleHQpIHx8ICcnKTsKY29uc3Qgbm90ZVRleHQgPSBjb21wdXRlZCgoKSA9PiAodHJlbmQudmFsdWUgJiYgdHJlbmQudmFsdWUubm90ZSkgfHwgJycpOwoKLyoqIOe7n+S4gOeahOe6tei9tOiMg+WbtO+8muS4pOadoeabsue6v+WFseeUqOS4gOaKiuWwuuWtkO+8iOWQq+e6oue6v++8jOaJjeiDveeci+WHuuOAjOemu+e6oue6v+i/mOacieWkmui/nOOAje+8iSAqLwpjb25zdCBkb21haW4gPSBjb21wdXRlZCgoKSA9PiB7CiAgY29uc3QgdCA9IHRyZW5kLnZhbHVlOwogIGNvbnN0IHZhbHMgPSBbXTsKICBbJ2F1Y3Rpb24nLCAnY2xvc2UnXS5mb3JFYWNoKChrKSA9PiB7CiAgICBwb2ludHNPZihrKS5mb3JFYWNoKChwKSA9PiB7IGlmIChwLm9rICYmIHAuZGV2ICE9PSBudWxsKSB2YWxzLnB1c2gocC5kZXYpOyB9KTsKICB9KTsKICBpZiAodmFscy5sZW5ndGggPT09IDApIHJldHVybiB7IGxvOiAwLCBoaTogMSB9OwogIGxldCBsbyA9IE1hdGgubWluLmFwcGx5KG51bGwsIHZhbHMuY29uY2F0KFswXSkpOwogIGxldCBoaSA9IE1hdGgubWF4LmFwcGx5KG51bGwsIHZhbHMuY29uY2F0KFswXSkpOwogIGNvbnN0IHRociA9IHQgPyB0LnRociA6IG51bGw7CiAgaWYgKHRociAhPT0gbnVsbCAmJiB0aHIgIT09IHVuZGVmaW5lZCAmJiBpc0Zpbml0ZShOdW1iZXIodGhyKSkpIHsKICAgIGlmIChOdW1iZXIodGhyKSA+PSAwKSBoaSA9IE1hdGgubWF4KGhpLCBOdW1iZXIodGhyKSk7CiAgICBlbHNlIGxvID0gTWF0aC5taW4obG8sIE51bWJlcih0aHIpKTsKICB9CiAgY29uc3QgcGFkID0gTWF0aC5tYXgoMSwgKGhpIC0gbG8pICogMC4xNSk7CiAgcmV0dXJuIHsgbG86IGxvIC0gcGFkLCBoaTogaGkgKyBwYWQgfTsKfSk7CgovKiog5YC8IOKGkiDnurXovbTnmb7liIbmr5TvvIgwID0g6aG26YOo77yMMTAwID0g5bqV6YOo77yJICovCmZ1bmN0aW9uIHlQY3RPZihkZXYpIHsKICBjb25zdCBkID0gZG9tYWluLnZhbHVlOwogIGNvbnN0IHNwYW4gPSBkLmhpIC0gZC5sbzsKICBpZiAoIShzcGFuID4gMCkpIHJldHVybiA1MDsKICByZXR1cm4gTWF0aC5taW4oMTAwLCBNYXRoLm1heCgwLCAoKGQuaGkgLSBkZXYpIC8gc3BhbikgKiAxMDApKTsKfQoKLyoqIOS4gOagueabsue6vyDihpIg5ZyG54K577yI5bimIHgveSDnmb7liIbmr5TvvInvvJt2eCA9IOaVsOWAvOaWh+Wtl+eahOaoquWQkeS9jee9ru+8iOmmluWwvuWkueS9j++8jOmBv+WFjea6ouWHuuWIsOWPo+W+hOagh+mimOS4iu+8iSAqLwpmdW5jdGlvbiBkb3RzT2Yoa2V5KSB7CiAgY29uc3QgbGlzdCA9IHBvaW50c09mKGtleSk7CiAgY29uc3QgbiA9IE1hdGgubWF4KDEsIGxpc3QubGVuZ3RoIC0gMSk7CiAgcmV0dXJuIGxpc3QubWFwKChwLCBpKSA9PiB7CiAgICBjb25zdCB4ID0gKGkgLyBuKSAqIDEwMDsKICAgIHJldHVybiB7CiAgICAgIGRhdGU6IHAuZGF0ZSwKICAgICAgb2s6IHAub2ssCiAgICAgIHRleHQ6IHAudGV4dCwKICAgICAgdG9uZTogcC50b25lIHx8ICdtdXRlZCcsCiAgICAgIHg6IHgsCiAgICAgIHZ4OiBNYXRoLm1pbig5MCwgTWF0aC5tYXgoMTAsIHgpKSwKICAgICAgeTogcC5vayAmJiBwLmRldiAhPT0gbnVsbCA/IHlQY3RPZihwLmRldikgOiA1MAogICAgfTsKICB9KTsKfQoKLyoqCiAqIOS4gOagueabsue6vyDihpIg5oqY57q/44CQ6YCQ5q61552A6Imy44CR77ya55u46YK75Lik54K55oiQ5LiA5q6177yM6aKc6Imy5Y+W5ZCO5LiA54K56Ieq5bex55qE6Imy6Zi244CCCiAqIOWIpOS4jeWHuueahOeCuSDih5Ig6YKj5LiA5q6155u05o6l5pat5byA77yI4puUIOS4jei3qOedgOi/nu+8jOS5n+S4jeaLvyAwIOWGkuWFhe+8ieOAggogKi8KZnVuY3Rpb24gc2VnbWVudHNPZihrZXkpIHsKICBjb25zdCBsaXN0ID0gcG9pbnRzT2Yoa2V5KTsKICBjb25zdCBuID0gTWF0aC5tYXgoMSwgbGlzdC5sZW5ndGggLSAxKTsKICBjb25zdCBzZWdzID0gW107CiAgZm9yIChsZXQgaSA9IDE7IGkgPCBsaXN0Lmxlbmd0aDsgaSsrKSB7CiAgICBjb25zdCBhID0gbGlzdFtpIC0gMV07CiAgICBjb25zdCBiID0gbGlzdFtpXTsKICAgIGlmICghKGEub2sgJiYgYS5kZXYgIT09IG51bGwgJiYgYi5vayAmJiBiLmRldiAhPT0gbnVsbCkpIGNvbnRpbnVlOwogICAgY29uc3QgeDEgPSAoKGkgLSAxKSAvIG4pICogMTAwOwogICAgY29uc3QgeTEgPSAoeVBjdE9mKGEuZGV2KSAvIDEwMCkgKiA0MDsKICAgIGNvbnN0IHgyID0gKGkgLyBuKSAqIDEwMDsKICAgIGNvbnN0IHkyID0gKHlQY3RPZihiLmRldikgLyAxMDApICogNDA7CiAgICBzZWdzLnB1c2goewogICAgICB0b25lOiBiLnRvbmUgfHwgJ211dGVkJywKICAgICAgcG9pbnRzOiB4MS50b0ZpeGVkKDIpICsgJywnICsgeTEudG9GaXhlZCgyKSArICcgJyArIHgyLnRvRml4ZWQoMikgKyAnLCcgKyB5Mi50b0ZpeGVkKDIpCiAgICB9KTsKICB9CiAgcmV0dXJuIHNlZ3M7Cn0KCmNvbnN0IGF1Y3Rpb25Eb3RzID0gY29tcHV0ZWQoKCkgPT4gZG90c09mKCdhdWN0aW9uJykpOwpjb25zdCBjbG9zZURvdHMgPSBjb21wdXRlZCgoKSA9PiBkb3RzT2YoJ2Nsb3NlJykpOwpjb25zdCBhdWN0aW9uU2VnbWVudHMgPSBjb21wdXRlZCgoKSA9PiBzZWdtZW50c09mKCdhdWN0aW9uJykpOwpjb25zdCBjbG9zZVNlZ21lbnRzID0gY29tcHV0ZWQoKCkgPT4gc2VnbWVudHNPZignY2xvc2UnKSk7CmNvbnN0IHRoclkgPSBjb21wdXRlZCgoKSA9PiB7CiAgY29uc3QgdCA9IHRyZW5kLnZhbHVlOwogIGlmICghdCB8fCB0LnRociA9PT0gbnVsbCB8fCB0LnRociA9PT0gdW5kZWZpbmVkIHx8ICFpc0Zpbml0ZShOdW1iZXIodC50aHIpKSkgcmV0dXJuIG51bGw7CiAgcmV0dXJuICh5UGN0T2YoTnVtYmVyKHQudGhyKSkgLyAxMDApICogNDA7Cn0pOwoKYXN5bmMgZnVuY3Rpb24gbG9hZCgpIHsKICBjb25zdCBteSA9ICsrX3NlcTsKICBsb2FkaW5nLnZhbHVlID0gdHJ1ZTsKICBlcnJvclRleHQudmFsdWUgPSAnJzsKICBjb25zdCByZXMgPSBhd2FpdCBsb2FkRGV2aWF0aW9uVHJlbmQoewogICAgbmFtZTogcHJvcHMuc3RvY2ssCiAgICBjb2RlOiBwcm9wcy5jb2RlLAogICAgd2luZG93RGF5czogcHJvcHMuZGF5cyA9PT0gMzAgPyAzMCA6IDEwLAogICAgYXNPZjogcHJvcHMuYXNPZgogIH0pOwogIGlmIChteSAhPT0gX3NlcSkgcmV0dXJuOyAgICAgICAgICAgICAgLy8g57uE5Lu25bey5o2i56WoIC8g5bey5Y246L29CiAgaWYgKCFyZXMgfHwgcmVzLm9rICE9PSB0cnVlKSB7CiAgICBlcnJvclRleHQudmFsdWUgPSAocmVzICYmIHJlcy5lcnJvcikgfHwgJ+WBj+emu+WAvOi2i+WKv+ivu+WPluWksei0pSc7CiAgICB0cmVuZC52YWx1ZSA9IG51bGw7CiAgfSBlbHNlIHsKICAgIHRyZW5kLnZhbHVlID0gcmVzLnRyZW5kOwogIH0KICBsb2FkaW5nLnZhbHVlID0gZmFsc2U7Cn0KCndhdGNoKAogICgpID0+IFtwcm9wcy5zdG9jaywgcHJvcHMuY29kZSwgcHJvcHMuZGF5cywgcHJvcHMuYXNPZl0sCiAgKCkgPT4geyBsb2FkKCk7IH0sCiAgeyBpbW1lZGlhdGU6IHRydWUgfQopOwo8L3NjcmlwdD4K
+<!--
+  TvrbDevTrend.vue — 「官方偏离值 · 5 日趋势」展开图（只在用户点开徽标时才挂载）
+
+  【用户口径 2026-11-28】
+    「在题材量比的选股侧的买点和卖点侧的股票下面添加官方偏离值的趋势图，五日的……
+      上面是竞价口径，下面是收盘口径。五日曲线图，连在一起。比如小标签是 10 日，就做
+      10 日偏离值的……如果逼近红线用橙色，触发用红色。」
+
+  【职责边界（§3 / §21）】
+    · 本组件只负责【画】：点位、颜色档、红线、日期全部由 Logic 层
+      `logic/auction/deviation-trend.js` 算好，模板里没有任何阈值判断；
+    · 取数走 Logic 层 `loadDeviationTrend()`（内部再走 Data 层），⛔ 组件不碰 Supabase；
+    · 默认收起：父组件用 v-if 控制挂载，所以「没点开 = 零请求、零 DOM、零计算」；
+    · §10：读失败 / 判不出 ⇒ 如实显示原因，⛔ 不画一条 0 线冒充「没有异动」。
+
+  【性能】
+    · 挂在行下方，一张图最多 5 个点 × 2 条曲线 = 10 个圆点，纯 SVG + 绝对定位，
+      不引入任何图表库、不建定时器、不建 Realtime；
+    · Logic 层有会话缓存：同一只票同一天同一窗口反复展开 = 0 请求 0 计算。
+-->
+<template>
+  <div class="tvrb-devt">
+    <div class="tvrb-devt-head">
+      <span class="tvrb-devt-t">官方偏离值 5 日趋势</span>
+      <span class="tvrb-devt-win">{{ windowLabel }}<template v-if="thrText"> · 红线 {{ thrText }}</template></span>
+      <span
+        class="tvrb-devt-x"
+        title="收起趋势图"
+        @click.stop="$emit('close')"
+      >×</span>
+    </div>
+
+    <div
+      v-if="loading"
+      class="tvrb-devt-state"
+    >
+      读取中…
+    </div>
+    <div
+      v-else-if="errorText"
+      class="tvrb-devt-state tvrb-devt-err"
+    >
+      {{ errorText }}
+    </div>
+    <template v-else>
+      <!-- 上半：竞价口径 -->
+      <div class="tvrb-devt-sec">
+        <span class="tvrb-devt-cap">竞价口径</span>
+        <div class="tvrb-devt-plot">
+          <svg
+            class="tvrb-devt-svg"
+            viewBox="0 0 100 40"
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            <line
+              v-if="thrY !== null"
+              class="tvrb-devt-thr"
+              x1="0"
+              :y1="thrY"
+              x2="100"
+              :y2="thrY"
+            />
+            <polyline
+              v-for="(seg, si) in auctionSegments"
+              :key="'a' + si"
+              class="tvrb-devt-line"
+              :class="'tvrb-devt-' + seg.tone"
+              :points="seg.points"
+            />
+          </svg>
+          <i
+            v-for="(p, i) in auctionDots"
+            :key="'ad' + i"
+            class="tvrb-devt-dot"
+            :class="'tvrb-devt-' + p.tone"
+            :style="{ left: p.x + '%', top: p.y + '%' }"
+            :title="p.date + ' 竞价口径 ' + (p.ok ? p.text : '判不出')"
+          />
+          <span
+            v-for="(p, i) in auctionDots"
+            :key="'av' + i"
+            class="tvrb-devt-v"
+            :class="'tvrb-devt-' + p.tone"
+            :style="{ left: p.vx + '%', top: p.y + '%' }"
+          >{{ p.ok ? p.text : '—' }}</span>
+        </div>
+      </div>
+
+      <!-- 下半：收盘口径 -->
+      <div class="tvrb-devt-sec">
+        <span class="tvrb-devt-cap">收盘口径</span>
+        <div class="tvrb-devt-plot">
+          <svg
+            class="tvrb-devt-svg"
+            viewBox="0 0 100 40"
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            <line
+              v-if="thrY !== null"
+              class="tvrb-devt-thr"
+              x1="0"
+              :y1="thrY"
+              x2="100"
+              :y2="thrY"
+            />
+            <polyline
+              v-for="(seg, si) in closeSegments"
+              :key="'c' + si"
+              class="tvrb-devt-line"
+              :class="'tvrb-devt-' + seg.tone"
+              :points="seg.points"
+            />
+          </svg>
+          <i
+            v-for="(p, i) in closeDots"
+            :key="'cd' + i"
+            class="tvrb-devt-dot"
+            :class="'tvrb-devt-' + p.tone"
+            :style="{ left: p.x + '%', top: p.y + '%' }"
+            :title="p.date + ' 收盘口径 ' + (p.ok ? p.text : '判不出')"
+          />
+          <span
+            v-for="(p, i) in closeDots"
+            :key="'cv' + i"
+            class="tvrb-devt-v"
+            :class="'tvrb-devt-' + p.tone"
+            :style="{ left: p.vx + '%', top: p.y + '%' }"
+          >{{ p.ok ? p.text : '—' }}</span>
+        </div>
+      </div>
+
+      <!-- 日期轴 + 图例 -->
+      <div class="tvrb-devt-foot">
+        <span class="tvrb-devt-dates">
+          <span
+            v-for="(d, i) in dates"
+            :key="'dt' + i"
+            class="tvrb-devt-date"
+          >{{ d.slice(5) }}</span>
+        </span>
+        <span class="tvrb-devt-legend">
+          <i class="tvrb-devt-lg tvrb-devt-lg-near" />逼近
+          <i class="tvrb-devt-lg tvrb-devt-lg-severe" />触发
+        </span>
+      </div>
+      <div
+        v-if="noteText"
+        class="tvrb-devt-state"
+      >
+        {{ noteText }}
+      </div>
+    </template>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, watch } from 'vue';
+import { loadDeviationTrend } from '../../logic/auction/deviation-trend.js';
+
+const props = defineProps({
+  /** 股票名（`stock_daily_pct` / `market_metrics` 的唯一键之一） */
+  stock: { type: String, required: true },
+  /** 6 位代码（决定对应哪只官方指数；空 ⇒ 直接如实报错） */
+  code: { type: String, default: '' },
+  /** 徽标上是哪一档：10 / 30（由 Logic 层 `deviationBadgeWindow` 给，⛔ 组件不判） */
+  days: { type: Number, default: 10 },
+  /** 窗口末日（历史复盘 = 那一天的日期） */
+  asOf: { type: String, default: '' }
+});
+defineEmits(['close']);
+
+const loading = ref(true);
+const errorText = ref('');
+const trend = ref(null);
+let _seq = 0;
+
+const windowLabel = computed(() => (props.days === 30 ? '30 日窗口' : '10 日窗口'));
+
+const pointsOf = (key) => ((trend.value && Array.isArray(trend.value[key])) ? trend.value[key] : []);
+const dates = computed(() => ((trend.value && trend.value.dates) || []));
+const thrText = computed(() => (trend.value && trend.value.thrText) || '');
+const noteText = computed(() => (trend.value && trend.value.note) || '');
+
+/** 统一的纵轴范围：两条曲线共用一把尺子（含红线，才能看出「离红线还有多远」） */
+const domain = computed(() => {
+  const t = trend.value;
+  const vals = [];
+  ['auction', 'close'].forEach((k) => {
+    pointsOf(k).forEach((p) => { if (p.ok && p.dev !== null) vals.push(p.dev); });
+  });
+  if (vals.length === 0) return { lo: 0, hi: 1 };
+  let lo = Math.min.apply(null, vals.concat([0]));
+  let hi = Math.max.apply(null, vals.concat([0]));
+  const thr = t ? t.thr : null;
+  if (thr !== null && thr !== undefined && isFinite(Number(thr))) {
+    if (Number(thr) >= 0) hi = Math.max(hi, Number(thr));
+    else lo = Math.min(lo, Number(thr));
+  }
+  const pad = Math.max(1, (hi - lo) * 0.15);
+  return { lo: lo - pad, hi: hi + pad };
+});
+
+/** 值 → 纵轴百分比（0 = 顶部，100 = 底部） */
+function yPctOf(dev) {
+  const d = domain.value;
+  const span = d.hi - d.lo;
+  if (!(span > 0)) return 50;
+  return Math.min(100, Math.max(0, ((d.hi - dev) / span) * 100));
+}
+
+/** 一根曲线 → 圆点（带 x/y 百分比）；vx = 数值文字的横向位置（首尾夹住，避免溢出到口径标题上） */
+function dotsOf(key) {
+  const list = pointsOf(key);
+  const n = Math.max(1, list.length - 1);
+  return list.map((p, i) => {
+    const x = (i / n) * 100;
+    return {
+      date: p.date,
+      ok: p.ok,
+      text: p.text,
+      tone: p.tone || 'muted',
+      x: x,
+      vx: Math.min(90, Math.max(10, x)),
+      y: p.ok && p.dev !== null ? yPctOf(p.dev) : 50
+    };
+  });
+}
+
+/**
+ * 一根曲线 → 折线【逐段着色】：相邻两点成一段，颜色取后一点自己的色阶。
+ * 判不出的点 ⇒ 那一段直接断开（⛔ 不跨着连，也不拿 0 冒充）。
+ */
+function segmentsOf(key) {
+  const list = pointsOf(key);
+  const n = Math.max(1, list.length - 1);
+  const segs = [];
+  for (let i = 1; i < list.length; i++) {
+    const a = list[i - 1];
+    const b = list[i];
+    if (!(a.ok && a.dev !== null && b.ok && b.dev !== null)) continue;
+    const x1 = ((i - 1) / n) * 100;
+    const y1 = (yPctOf(a.dev) / 100) * 40;
+    const x2 = (i / n) * 100;
+    const y2 = (yPctOf(b.dev) / 100) * 40;
+    segs.push({
+      tone: b.tone || 'muted',
+      points: x1.toFixed(2) + ',' + y1.toFixed(2) + ' ' + x2.toFixed(2) + ',' + y2.toFixed(2)
+    });
+  }
+  return segs;
+}
+
+const auctionDots = computed(() => dotsOf('auction'));
+const closeDots = computed(() => dotsOf('close'));
+const auctionSegments = computed(() => segmentsOf('auction'));
+const closeSegments = computed(() => segmentsOf('close'));
+const thrY = computed(() => {
+  const t = trend.value;
+  if (!t || t.thr === null || t.thr === undefined || !isFinite(Number(t.thr))) return null;
+  return (yPctOf(Number(t.thr)) / 100) * 40;
+});
+
+async function load() {
+  const my = ++_seq;
+  loading.value = true;
+  errorText.value = '';
+  const res = await loadDeviationTrend({
+    name: props.stock,
+    code: props.code,
+    windowDays: props.days === 30 ? 30 : 10,
+    asOf: props.asOf
+  });
+  if (my !== _seq) return;              // 组件已换票 / 已卸载
+  if (!res || res.ok !== true) {
+    errorText.value = (res && res.error) || '偏离值趋势读取失败';
+    trend.value = null;
+  } else {
+    trend.value = res.trend;
+  }
+  loading.value = false;
+}
+
+watch(
+  () => [props.stock, props.code, props.days, props.asOf],
+  () => { load(); },
+  { immediate: true }
+);
+</script>

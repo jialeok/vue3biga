@@ -1,1 +1,116 @@
-Ly8gZGV2aWF0aW9uLXRyZW5kLnRlc3QuanMg4oCUIOOAjOWumOaWueWBj+emu+WAvCA1IOaXpei2i+WKv+OAjeeahOWbnuW9kumUgQovLwovLyDplIHnlKjmiLcgMjAyNi0xMS0yOCDnmoTlm5vmnaHlj6PlvoTvvJoKLy8gICDikaAg5Y+q55S744CQ5pyA5ZCOIDUg5Liq5Lqk5piT5pel44CR77yI5Lul5oyH5pWw6IW/5Li65Lqk5piT5pel5Y6G77yJ77ybCi8vICAg4pGhIOS4iumdouernuS7t+WPo+W+hCAvIOS4i+mdouaUtuebmOWPo+W+hO+8muafkOWkqeernuS7t+a2qOW5hee8uiDih5Ig6YKj5Liq54K55Yik5LiN5Ye677yI4puUIOS4jeW9kyAw77yJ77ybCi8vICAg4pGiIOeql+WPo+i3n+edgOW+veagh+i1sO+8muW+veaghyAxMCDml6Ug4oeSIDEwIOaXpeWBj+emu++8jOW+veaghyAzMCDml6Ug4oeSIDMwIOaXpeWBj+emu++8mwovLyAgIOKRoyDpopzoibLmoaPvvJrpgLzov5HvvIjiiaU5MCUg57qi57q/77yJ5qmZIC8g6Kem5Y+R77yI4omlMTAwJe+8iee6ouOAggppbXBvcnQgeyBkZXNjcmliZSwgaXQsIGV4cGVjdCB9IGZyb20gJ3ZpdGVzdCc7CmltcG9ydCB7IGJ1aWxkRGV2aWF0aW9uVHJlbmQsIERFVl9UUkVORF9EQVlTIH0gZnJvbSAnLi9kZXZpYXRpb24tdHJlbmQuanMnOwppbXBvcnQgeyBjb21wdXRlRGV2aWF0aW9uLCBkZXZpYXRpb25CYWRnZVdpbmRvdyB9IGZyb20gJy4vYWJub3JtYWwtZGV2aWF0aW9uLmpzJzsKCi8qKiDpgKDkuIDmrrXpgJDml6Xohb/vvJpzdGFydCDotbfov57nu60gbiDkuKrlt6XkvZzml6XvvIjov5nph4znm7TmjqXmjIkgMjAyNi0wOS0wMSDotbfpobrlu7bvvIzkuI3otbDml6XljobvvIkgKi8KZnVuY3Rpb24gbWFrZUxlZ3Moc3RhcnREYXksIG4sIGRhaWx5UGN0KSB7CiAgY29uc3Qgb3V0ID0gW107CiAgY29uc3QgdDAgPSBEYXRlLnBhcnNlKHN0YXJ0RGF5ICsgJ1QwMDowMDowMFonKTsKICBmb3IgKGxldCBpID0gMDsgaSA8IG47IGkrKykgewogICAgY29uc3QgZCA9IG5ldyBEYXRlKHQwICsgaSAqIDg2NDAwMDAwKS50b0lTT1N0cmluZygpLnNsaWNlKDAsIDEwKTsKICAgIG91dC5wdXNoKHsgZGF0ZTogZCwgcGN0OiBkYWlseVBjdCB9KTsKICB9CiAgcmV0dXJuIG91dDsKfQoKY29uc3QgaWR4TGVncyA9IGZ1bmN0aW9uIChuKSB7IHJldHVybiBtYWtlTGVncygnMjAyNi0wOS0wMScsIG4sIDApOyB9OwoKZGVzY3JpYmUoJ1tERVYtVFJFTkRdIGJ1aWxkRGV2aWF0aW9uVHJlbmQgwrcg5LqU5pel5Y+M5Y+j5b6EJywgKCkgPT4gewogIGl0KCflj6rlj5bmnIDlkI4gNSDkuKrkuqTmmJPml6XvvIznqpflj6PlpKnmlbDot5/nnYDlvr3moIfotbAnLCAoKSA9PiB7CiAgICBjb25zdCBsZWdzID0gbWFrZUxlZ3MoJzIwMjYtMDktMDEnLCA0MCwgMSk7CiAgICBjb25zdCBpZHggPSBpZHhMZWdzKDQwKTsKICAgIGNvbnN0IGFzT2YgPSBpZHhbaWR4Lmxlbmd0aCAtIDFdLmRhdGU7CgogICAgY29uc3QgdDEwID0gYnVpbGREZXZpYXRpb25UcmVuZCh7CiAgICAgIG5hbWU6ICfmtYvor5XnpagnLCBjb2RlOiAnMDAyMjQyJywgY2xvc2VMZWdzOiBsZWdzLCBpbmRleExlZ3M6IGlkeCwKICAgICAgd2luZG93RGF5czogMTAsIGFzT2Y6IGFzT2YKICAgIH0pOwogICAgY29uc3QgdDMwID0gYnVpbGREZXZpYXRpb25UcmVuZCh7CiAgICAgIG5hbWU6ICfmtYvor5XnpagnLCBjb2RlOiAnMDAyMjQyJywgY2xvc2VMZWdzOiBsZWdzLCBpbmRleExlZ3M6IGlkeCwKICAgICAgd2luZG93RGF5czogMzAsIGFzT2Y6IGFzT2YKICAgIH0pOwoKICAgIGV4cGVjdCh0MTAuZGF0ZXMubGVuZ3RoKS50b0JlKERFVl9UUkVORF9EQVlTKTsKICAgIGV4cGVjdCh0MTAuY2xvc2UubGVuZ3RoKS50b0JlKERFVl9UUkVORF9EQVlTKTsKICAgIGV4cGVjdCh0MTAudGhyKS50b0JlKDEwMCk7ICAgICAgICAgIC8vIDEwIOaXpee6oue6vyArMTAwJQogICAgZXhwZWN0KHQzMC50aHIpLnRvQmUoMjAwKTsgICAgICAgICAgLy8gMzAg5pel57qi57q/ICsyMDAlCiAgfSk7CgogIGl0KCfnq57ku7fmtqjluYXnvLrlpLEg4oeSIOmCo+S4queCueWIpOS4jeWHuu+8iOKblCDkuI3mi78gMCDlhpLlhYXvvIknLCAoKSA9PiB7CiAgICBjb25zdCBsZWdzID0gbWFrZUxlZ3MoJzIwMjYtMDktMDEnLCAyMCwgMSk7CiAgICBjb25zdCBpZHggPSBpZHhMZWdzKDIwKTsKICAgIGNvbnN0IGFzT2YgPSBpZHhbaWR4Lmxlbmd0aCAtIDFdLmRhdGU7CgogICAgY29uc3Qgbm9BdWMgPSBidWlsZERldmlhdGlvblRyZW5kKHsKICAgICAgbmFtZTogJ+a1i+ivleelqCcsIGNvZGU6ICcwMDIyNDInLCBjbG9zZUxlZ3M6IGxlZ3MsIGluZGV4TGVnczogaWR4LAogICAgICB3aW5kb3dEYXlzOiAxMCwgYXNPZjogYXNPZgogICAgfSk7CiAgICBub0F1Yy5hdWN0aW9uLmZvckVhY2goZnVuY3Rpb24gKHApIHsKICAgICAgZXhwZWN0KHAub2spLnRvQmUoZmFsc2UpOwogICAgICBleHBlY3QocC5kZXYpLnRvQmUobnVsbCk7CiAgICAgIGV4cGVjdChwLnRvbmUpLnRvQmUoJ211dGVkJyk7CiAgICB9KTsKCiAgICBjb25zdCBvbmVBdWMgPSBidWlsZERldmlhdGlvblRyZW5kKHsKICAgICAgbmFtZTogJ+a1i+ivleelqCcsIGNvZGU6ICcwMDIyNDInLCBjbG9zZUxlZ3M6IGxlZ3MsIGluZGV4TGVnczogaWR4LAogICAgICB3aW5kb3dEYXlzOiAxMCwgYXNPZjogYXNPZiwgYXVjQnlEYXRlOiBuZXcgTWFwKFtbYXNPZiwgM11dKQogICAgfSk7CiAgICBleHBlY3Qob25lQXVjLmF1Y3Rpb25bb25lQXVjLmF1Y3Rpb24ubGVuZ3RoIC0gMV0ub2spLnRvQmUodHJ1ZSk7CiAgfSk7CgogIGl0KCfoibLpmLbvvJrop6blj5HvvIjiiaUxMDAlIOe6oue6v++8iXNldmVyZSAvIOmAvOi/ke+8iOKJpTkwJe+8iW5lYXIgLyDlubPluLggb2snLCAoKSA9PiB7CiAgICBjb25zdCBjYXNlcyA9IFsKICAgICAgeyBkYWlseTogNy4yLCB0b25lOiAnc2V2ZXJlJyB9LCAgIC8vIDEuMDcyXjEwIC0gMSDiiYggKzEwMC40JQogICAgICB7IGRhaWx5OiA2LjcsIHRvbmU6ICduZWFyJyB9LCAgICAgLy8gMS4wNjdeMTAgLSAxIOKJiCArOTEuMyUKICAgICAgeyBkYWlseTogMSwgdG9uZTogJ29rJyB9CiAgICBdOwogICAgY2FzZXMuZm9yRWFjaChmdW5jdGlvbiAoYykgewogICAgICBjb25zdCBsZWdzID0gbWFrZUxlZ3MoJzIwMjYtMDktMDEnLCAyMCwgYy5kYWlseSk7CiAgICAgIGNvbnN0IGlkeCA9IGlkeExlZ3MoMjApOwogICAgICBjb25zdCBhc09mID0gaWR4W2lkeC5sZW5ndGggLSAxXS5kYXRlOwogICAgICBjb25zdCB0ID0gYnVpbGREZXZpYXRpb25UcmVuZCh7CiAgICAgICAgbmFtZTogJ+a1i+ivleelqCcsIGNvZGU6ICcwMDIyNDInLCBjbG9zZUxlZ3M6IGxlZ3MsIGluZGV4TGVnczogaWR4LAogICAgICAgIHdpbmRvd0RheXM6IDEwLCBhc09mOiBhc09mCiAgICAgIH0pOwogICAgICBjb25zdCBsYXN0ID0gdC5jbG9zZVt0LmNsb3NlLmxlbmd0aCAtIDFdOwogICAgICBleHBlY3QobGFzdC5vaykudG9CZSh0cnVlKTsKICAgICAgZXhwZWN0KGxhc3QudG9uZSkudG9CZShjLnRvbmUpOwogICAgfSk7CiAgfSk7CgogIGl0KCfnvLrku6PnoIEgLyDnvLrmjIfmlbDohb8g4oeSIOWmguWunui/lOWbniBub3Rl77yM4puUIOS4jemAoOS4gOadoSAwIOe6vycsICgpID0+IHsKICAgIGNvbnN0IGxlZ3MgPSBtYWtlTGVncygnMjAyNi0wOS0wMScsIDEyLCAxKTsKICAgIGNvbnN0IGEgPSBidWlsZERldmlhdGlvblRyZW5kKHsgbmFtZTogJycsIGNvZGU6ICcwMDIyNDInLCBjbG9zZUxlZ3M6IGxlZ3MsIGluZGV4TGVnczogaWR4TGVncygxMikgfSk7CiAgICBleHBlY3QoYS5oYXNBbnkpLnRvQmUoZmFsc2UpOwogICAgZXhwZWN0KGEubm90ZSkubm90LnRvQmUoJycpOwogICAgY29uc3QgYiA9IGJ1aWxkRGV2aWF0aW9uVHJlbmQoeyBuYW1lOiAn5rWL6K+V56WoJywgY29kZTogJzAwMjI0MicsIGNsb3NlTGVnczogbGVncywgaW5kZXhMZWdzOiBbXSB9KTsKICAgIGV4cGVjdChiLmhhc0FueSkudG9CZShmYWxzZSk7CiAgICBleHBlY3QoYi5ub3RlKS5ub3QudG9CZSgnJyk7CiAgfSk7Cn0pOwoKZGVzY3JpYmUoJ1tERVYtVFJFTkRdIGRldmlhdGlvbkJhZGdlV2luZG93IMK3IOi2i+WKv+eql+WPo+W/hemhu+WkjeeUqOW+veagh+eahOWQjOS4gOmAieaLqeWZqCcsICgpID0+IHsKICBpdCgnMzAg5pel5YGP56a75Y2g5q+U5pu06auYIOKHkiDlvr3moIfor7QgMzAg5pel77yM6LaL5Yq/5Zu+5Lmf55S7IDMwIOaXpScsICgpID0+IHsKICAgIC8vIDMwIOWkqeavj+WkqSArMyUg4oeSIDMwIOaXpeWBj+emuyDiiYggKzE0MyXvvIgwLjcx77yJ77yMMTAg5pelIOKJiCArMzQl77yIMC4zNO+8ieKHkiDlvr3moIflj5YgMzAg5pelCiAgICBjb25zdCBsZWdzID0gbWFrZUxlZ3MoJzIwMjYtMDktMDEnLCA0MCwgMyk7CiAgICBjb25zdCBpZHggPSBpZHhMZWdzKDQwKTsKICAgIGNvbnN0IGFzT2YgPSBpZHhbaWR4Lmxlbmd0aCAtIDFdLmRhdGU7CiAgICBjb25zdCBmID0gY29tcHV0ZURldmlhdGlvbih7CiAgICAgIGNvZGU6ICcwMDIyNDInLCBuYW1lOiAn5rWL6K+V56WoJywgc3RvY2tMZWdzOiBsZWdzLCBpbmRleExlZ3M6IGlkeCwgYXNPZjogYXNPZgogICAgfSk7CiAgICBleHBlY3QoZi5vaykudG9CZSh0cnVlKTsKICAgIGV4cGVjdChkZXZpYXRpb25CYWRnZVdpbmRvdyhmKSkudG9CZSgzMCk7CiAgfSk7CgogIGl0KCfliKTkuI3lh7rnmoTnpagg4oeSIOeql+WPo+S4uiBudWxs77yI4puUIOS4jeiuuOm7mOiupCAxMCDml6XnoaznlLvvvIknLCAoKSA9PiB7CiAgICBleHBlY3QoZGV2aWF0aW9uQmFkZ2VXaW5kb3coeyBvazogZmFsc2UgfSkpLnRvQmUobnVsbCk7CiAgICBleHBlY3QoZGV2aWF0aW9uQmFkZ2VXaW5kb3cobnVsbCkpLnRvQmUobnVsbCk7CiAgfSk7Cn0pOwo=
+// deviation-trend.test.js — 「官方偏离值 5 日趋势」的回归锁
+//
+// 锁用户 2026-11-28 的四条口径：
+//   ① 只画【最后 5 个交易日】（以指数腿为交易日历）；
+//   ② 上面竞价口径 / 下面收盘口径：某天竞价涨幅缺 ⇒ 那个点判不出（⛔ 不当 0）；
+//   ③ 窗口跟着徽标走：徽标 10 日 ⇒ 10 日偏离，徽标 30 日 ⇒ 30 日偏离；
+//   ④ 颜色档：逼近（≥90% 红线）橙 / 触发（≥100%）红。
+import { describe, it, expect } from 'vitest';
+import { buildDeviationTrend, DEV_TREND_DAYS } from './deviation-trend.js';
+import { computeDeviation, deviationBadgeWindow } from './abnormal-deviation.js';
+
+/** 造一段逐日腿：start 起连续 n 个工作日（这里直接按 2026-09-01 起顺延，不走日历） */
+function makeLegs(startDay, n, dailyPct) {
+  const out = [];
+  const t0 = Date.parse(startDay + 'T00:00:00Z');
+  for (let i = 0; i < n; i++) {
+    const d = new Date(t0 + i * 86400000).toISOString().slice(0, 10);
+    out.push({ date: d, pct: dailyPct });
+  }
+  return out;
+}
+
+const idxLegs = function (n) { return makeLegs('2026-09-01', n, 0); };
+
+describe('[DEV-TREND] buildDeviationTrend · 五日双口径', () => {
+  it('只取最后 5 个交易日，窗口天数跟着徽标走', () => {
+    const legs = makeLegs('2026-09-01', 40, 1);
+    const idx = idxLegs(40);
+    const asOf = idx[idx.length - 1].date;
+
+    const t10 = buildDeviationTrend({
+      name: '测试票', code: '002242', closeLegs: legs, indexLegs: idx,
+      windowDays: 10, asOf: asOf
+    });
+    const t30 = buildDeviationTrend({
+      name: '测试票', code: '002242', closeLegs: legs, indexLegs: idx,
+      windowDays: 30, asOf: asOf
+    });
+
+    expect(t10.dates.length).toBe(DEV_TREND_DAYS);
+    expect(t10.close.length).toBe(DEV_TREND_DAYS);
+    expect(t10.thr).toBe(100);          // 10 日红线 +100%
+    expect(t30.thr).toBe(200);          // 30 日红线 +200%
+  });
+
+  it('竞价涨幅缺失 ⇒ 那个点判不出（⛔ 不拿 0 冒充）', () => {
+    const legs = makeLegs('2026-09-01', 20, 1);
+    const idx = idxLegs(20);
+    const asOf = idx[idx.length - 1].date;
+
+    const noAuc = buildDeviationTrend({
+      name: '测试票', code: '002242', closeLegs: legs, indexLegs: idx,
+      windowDays: 10, asOf: asOf
+    });
+    noAuc.auction.forEach(function (p) {
+      expect(p.ok).toBe(false);
+      expect(p.dev).toBe(null);
+      expect(p.tone).toBe('muted');
+    });
+
+    const oneAuc = buildDeviationTrend({
+      name: '测试票', code: '002242', closeLegs: legs, indexLegs: idx,
+      windowDays: 10, asOf: asOf, aucByDate: new Map([[asOf, 3]])
+    });
+    expect(oneAuc.auction[oneAuc.auction.length - 1].ok).toBe(true);
+  });
+
+  it('色阶：触发（≥100% 红线）severe / 逼近（≥90%）near / 平常 ok', () => {
+    const cases = [
+      { daily: 7.2, tone: 'severe' },   // 1.072^10 - 1 ≈ +100.4%
+      { daily: 6.7, tone: 'near' },     // 1.067^10 - 1 ≈ +91.3%
+      { daily: 1, tone: 'ok' }
+    ];
+    cases.forEach(function (c) {
+      const legs = makeLegs('2026-09-01', 20, c.daily);
+      const idx = idxLegs(20);
+      const asOf = idx[idx.length - 1].date;
+      const t = buildDeviationTrend({
+        name: '测试票', code: '002242', closeLegs: legs, indexLegs: idx,
+        windowDays: 10, asOf: asOf
+      });
+      const last = t.close[t.close.length - 1];
+      expect(last.ok).toBe(true);
+      expect(last.tone).toBe(c.tone);
+    });
+  });
+
+  it('缺代码 / 缺指数腿 ⇒ 如实返回 note，⛔ 不造一条 0 线', () => {
+    const legs = makeLegs('2026-09-01', 12, 1);
+    const a = buildDeviationTrend({ name: '', code: '002242', closeLegs: legs, indexLegs: idxLegs(12) });
+    expect(a.hasAny).toBe(false);
+    expect(a.note).not.toBe('');
+    const b = buildDeviationTrend({ name: '测试票', code: '002242', closeLegs: legs, indexLegs: [] });
+    expect(b.hasAny).toBe(false);
+    expect(b.note).not.toBe('');
+  });
+});
+
+describe('[DEV-TREND] deviationBadgeWindow · 趋势窗口必须复用徽标的同一选择器', () => {
+  it('30 日偏离占比更高 ⇒ 徽标说 30 日，趋势图也画 30 日', () => {
+    // 30 天每天 +3% ⇒ 30 日偏离 ≈ +143%（0.71），10 日 ≈ +34%（0.34）⇒ 徽标取 30 日
+    const legs = makeLegs('2026-09-01', 40, 3);
+    const idx = idxLegs(40);
+    const asOf = idx[idx.length - 1].date;
+    const f = computeDeviation({
+      code: '002242', name: '测试票', stockLegs: legs, indexLegs: idx, asOf: asOf
+    });
+    expect(f.ok).toBe(true);
+    expect(deviationBadgeWindow(f)).toBe(30);
+  });
+
+  it('判不出的票 ⇒ 窗口为 null（⛔ 不许默认 10 日硬画）', () => {
+    expect(deviationBadgeWindow({ ok: false })).toBe(null);
+    expect(deviationBadgeWindow(null)).toBe(null);
+  });
+});
