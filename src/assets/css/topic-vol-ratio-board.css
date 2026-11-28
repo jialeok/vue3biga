@@ -1948,6 +1948,79 @@
     color: #0f766e;
 }
 
+/* ★★ [NEW-DRAGON-LIFE 2026-11-28 用户口径] 第三十七条【新龙续命】容器 ——
+   与上面几段同一前提：⛔ 必须渲染在 .tvrb-buy-list.tvrb-ebb（父级 grayscale + opacity）【之外】，
+   CSS 的 filter 不能被后代撤销，放进去等于把今天要续命持有的这只也灰掉。
+   ⚠️ 配色用【靛蓝 indigo】而不是紫罗兰（第三十条）：两条都属于「空仓日逆势还能买」，
+      同色会分不清是谁出的票；本看板规矩是「一条规则一个可区分的颜色」。
+   ⚠️ 左侧 4px 强调边：本条是「今天不空仓」的决定性一块，视觉权重高于补涨（3px）。 */
+.tvrb-new-dragon-life-buy {
+    margin: 2px 0 8px;
+    padding: 8px 10px 9px;
+    background: linear-gradient(180deg, #eef2ff 0%, #e0e7ff 100%);
+    border: 2px solid #4338ca;
+    border-left-width: 4px;
+    border-radius: 10px;
+    box-shadow: 0 1px 2px rgba(67, 56, 202, 0.12);
+}
+
+.tvrb-new-dragon-life-label {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 5px;
+}
+
+/* 「第三十七条」小药丸：一眼看出是哪条规则，和正文标题分开 */
+.tvrb-new-dragon-life-rule {
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: #4338ca;
+    color: #eef2ff;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+}
+
+.tvrb-new-dragon-life-title {
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    color: #312e81;
+}
+
+.tvrb-new-dragon-life-sub {
+    font-size: 10px;
+    font-weight: 600;
+    color: #4f46e5;
+    opacity: 0.85;
+}
+
+/* 容器内说明：讲【为什么这一块存在】，⛔ 与行内说明不重复 */
+.tvrb-new-dragon-life-note {
+    margin-bottom: 5px;
+    font-size: 10px;
+    line-height: 1.65;
+    color: #3730a3;
+}
+
+/* 优先级附注：降一档存在感，避免整段说明太重 */
+.tvrb-new-dragon-life-caveat {
+    display: block;
+    margin-top: 2px;
+    color: #6366f1;
+}
+
+/* 动作标签【新龙续命】（tone = 'newlife'，由 Logic 层给，CSS 只做视觉映射 §21） */
+.tvrb-action.tvrb-action-newlife {
+    background: #4338ca;
+    color: #eef2ff;
+    letter-spacing: 0.3px;
+    outline: 1px solid rgba(238, 242, 255, 0.85);
+    outline-offset: -2px;
+}
+
 /* ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条【弱势切抱团】容器 ——
    前提与另外四段完全一样：⛔ 必须渲染在 .tvrb-buy-list.tvrb-ebb（父级 grayscale + opacity）【之外】，
    CSS 的 filter 不能被后代撤销，放进去等于把今天要买的这只也灰掉。

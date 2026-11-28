@@ -372,10 +372,12 @@ export const NEW_DRAGON_LIFE_TAG = '新龙续命';
 /** 独立买点块的合成题材头（渲染在灰化容器之外的那一段的标题） */
 export const NEW_DRAGON_LIFE_BLOCK_TOPIC = '新龙续命 · 买点';
 /**
- * 配色档：沿用第三十条/第三十二条/第三十五条那档紫罗兰 `weakhuddle`。
- * ⛔ 不为新规则另造颜色 —— 同属「空仓日逆势还能买」，同一视觉语义；几条规则靠文字区分。
+ * 配色档：独立一档【靛蓝 newlife】。
+ * ⚠️ 原来先复用第三十条的紫罗兰 weakhuddle，但那条也是「空仓日逆势还能买」，
+ *   两条同色后屏幕上分不清是谁出的票 ⇒ 按本看板既有规矩（每条规则一色）单独给一档。
+ *   紫罗兰 = 第三十条弱势切抱团；青绿 = 第三十五条；橙 = 第三十一条；靛蓝 = 本条。
  */
-export const NEW_DRAGON_LIFE_TONE = TOP30_HUDDLE_TONE;
+export const NEW_DRAGON_LIFE_TONE = 'newlife';
 /** 悬停说明（文案唯一出处；组件只渲染 Logic 给的值，§21） */
 export const NEW_DRAGON_LIFE_TITLE =
   '第三十七条【新龙续命】：今天命中「建议空仓」提醒（第一题材平均竞价量比 < 25、整段灰化），' +

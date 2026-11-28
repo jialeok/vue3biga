@@ -289,13 +289,15 @@
                 :class="{ 'tvrb-abnormal-gray': abnormalGray }"
               >
                 <div class="tvrb-new-dragon-life-label tvrb-selectable">
-                  新龙续命 · 买点（第三十七条 · 昨日买过、今日仍是龙一）
+                  <span class="tvrb-new-dragon-life-rule">第三十七条</span>
+                  <span class="tvrb-new-dragon-life-title">新龙续命 · 买点</span>
+                  <span class="tvrb-new-dragon-life-sub">昨日买过 · 今日仍是龙一</span>
                 </div>
                 <div class="tvrb-new-dragon-life-note tvrb-selectable">
-                  今天本来建议空仓（第一题材平均竞价量比 &lt; 25、整段灰化），
-                  但这一只是你【昨天买点侧已经买过】、今天【仍然是所在题材龙一】的票 ⇒
-                  龙头还在续命 ⇒ 今天继续持有（不是今天新开仓）。
-                  ⛔ 昨天二次确认退潮的题材不续命；越红线 / 逼近红线（三十四 / 三十六）优先级更高，命中时本块让路。
+                  今天建议空仓（第一题材平均竞价量比 &lt; 25、整段灰化），
+                  但这一只是【昨天买点侧已经买过】、今天【仍然是所在题材龙一】的票 ⇒
+                  龙头还在续命 ⇒ 继续持有（不是今天新开仓）。
+                  <span class="tvrb-new-dragon-life-caveat">退潮题材不续命；越红线 / 逼近红线（34 / 36）优先。</span>
                 </div>
                 <TvrbBuyBlock
                   :block="newDragonLife"
