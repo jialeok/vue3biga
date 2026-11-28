@@ -161,6 +161,16 @@
           class="tvrb-sell-at"
           :class="it.sellHint ? ('tvrb-tone-' + it.sellHint.tone) : ''"
         >{{ it.sellHint ? it.sellHint.timeLabel : (it.sellAt + '卖') }}</span>
+        <!-- ★★ [DEV-TREND 2026-11-28 用户口径] 官方偏离值 5 日趋势图（默认收起，点徽标才挂载）
+             ★ 位置在灰色规则说明文字【上方】：先看图、再读解释。 -->
+        <TvrbDevTrend
+          v-if="it.devDays && devTrendOpenSet.has(it.name)"
+          :stock="it.name"
+          :code="it.devCode || ''"
+          :days="it.devDays"
+          :as-of="devAsOf"
+          @close="toggleDevTrend(it.name)"
+        />
         <!-- 逐行说明文字（为什么是尾盘卖 / 竞价卖 / 持有 …）；【简洁】模式下由 CSS 隐藏 -->
         <div
           v-if="it.actionNote"
@@ -181,15 +191,6 @@
           <span class="tvrb-sell-hint-text">{{ it.sellHint.text }}</span>
         </div>
       </div>
-      <!-- ★★ [DEV-TREND 2026-11-28 用户口径] 官方偏离值 5 日趋势图（默认收起，点徽标才挂载） -->
-      <TvrbDevTrend
-        v-if="it.devDays && devTrendOpenSet.has(it.name)"
-        :stock="it.name"
-        :code="it.devCode || ''"
-        :days="it.devDays"
-        :as-of="devAsOf"
-        @close="toggleDevTrend(it.name)"
-      />
       <!-- 分笔明细面板（与买点侧、与分笔买卖看板同一组件、同一段文字） -->
       <div
         v-if="penOpenSet.has(it.name)"

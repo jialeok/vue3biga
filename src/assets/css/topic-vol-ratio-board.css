@@ -1329,7 +1329,9 @@
 }
 
 .tvrb-devt {
-    margin: 2px 0 8px 14px;
+    /* 整行独占（在 .tvrb-row 里换行），与逐行说明文字同一条左边线（26px）；右侧不越界 */
+    flex: 0 0 calc(100% - 26px);
+    margin: 2px 0 8px 26px;
     padding: 6px 8px 5px;
     background: #fafaf9;
     border: 1px solid #e2e8f0;
@@ -1484,34 +1486,33 @@
     --devt-text: #94a3b8;
 }
 
-.tvrb-devt-foot {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-top: 2px;
-    font-size: 8px;
-    line-height: 12px;
-    color: #94a3b8;
-}
-
+/* 日期轴：与圆点共用同一套百分比坐标。
+   ⛔ 不许用 flex + space-between（日期中心落在「区间」上，和 0%/100% 的圆点对不齐）。 */
 .tvrb-devt-dates {
-    flex: 1 1 auto;
-    display: flex;
-    justify-content: space-between;
-    min-width: 0;
-    padding-left: 49px;
+    position: relative;
+    height: 12px;
+    margin: 1px 0 0 49px;
 }
 
 .tvrb-devt-date {
-    flex: 1 1 0;
-    text-align: center;
+    position: absolute;
+    top: 0;
+    transform: translateX(-50%);
+    font-size: 8px;
+    line-height: 12px;
+    color: #94a3b8;
+    white-space: nowrap;
 }
 
+/* 图例：收盘口径下方单独一行（不与日期挤在一起） */
 .tvrb-devt-legend {
-    flex: 0 0 auto;
-    display: inline-flex;
+    display: flex;
     align-items: center;
     gap: 3px;
+    margin-top: 2px;
+    padding-left: 49px;
+    font-size: 8px;
+    line-height: 12px;
     color: #64748b;
 }
 

@@ -241,6 +241,16 @@
           v-if="p.holdTag"
           class="tvrb-hold"
         >{{ p.holdTag }}</span>
+        <!-- ★★ [DEV-TREND 2026-11-28 用户口径] 官方偏离值 5 日趋势图（默认收起，点徽标才挂载）
+             ★ 位置在灰色规则说明文字【上方】：先看图、再读解释。 -->
+        <TvrbDevTrend
+          v-if="p.devDays && devTrendOpenSet.has(p.name)"
+          :stock="p.name"
+          :code="p.devCode || ''"
+          :days="p.devDays"
+          :as-of="devAsOf"
+          @close="toggleDevTrend(p.name)"
+        />
         <!-- 逐行说明文字（为什么是竞价买 / 尾盘买…）；【简洁】模式下由 CSS 隐藏 -->
         <div
           v-if="p.actionNote"
@@ -249,17 +259,6 @@
           {{ p.actionNote }}
         </div>
       </div>
-      <!-- ★★ [DEV-TREND 2026-11-28 用户口径] 官方偏离值 5 日趋势图（默认收起）：
-           点行上的「10日/30日偏离」徽标才挂载 ⇒ 没展开时零请求 / 零 DOM；
-           窗口（10/30）与代码都来自徽标那一档（p.devDays / p.devCode），⛔ 本组件不判。 -->
-      <TvrbDevTrend
-        v-if="p.devDays && devTrendOpenSet.has(p.name)"
-        :stock="p.name"
-        :code="p.devCode || ''"
-        :days="p.devDays"
-        :as-of="devAsOf"
-        @close="toggleDevTrend(p.name)"
-      />
       <!-- 分笔明细面板（与「分笔买卖」看板的股票展开图【同一个组件、同一段文字】）。
            §10：还没抓 / 没数据时，不假装面板是空的 —— 如实显示状态（⛔ 不留一片空白）。 -->
       <div

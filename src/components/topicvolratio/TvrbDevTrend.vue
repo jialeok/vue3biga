@@ -131,19 +131,19 @@
         </div>
       </div>
 
-      <!-- 日期轴 + 图例 -->
-      <div class="tvrb-devt-foot">
-        <span class="tvrb-devt-dates">
-          <span
-            v-for="(d, i) in dates"
-            :key="'dt' + i"
-            class="tvrb-devt-date"
-          >{{ d.slice(5) }}</span>
-        </span>
-        <span class="tvrb-devt-legend">
-          <i class="tvrb-devt-lg tvrb-devt-lg-near" />逼近
-          <i class="tvrb-devt-lg tvrb-devt-lg-severe" />触发
-        </span>
+      <!-- 日期轴：与圆点共用同一套百分比坐标（⛔ 不用 space-between，否则日期中心和圆点对不上） -->
+      <div class="tvrb-devt-dates">
+        <span
+          v-for="(p, i) in auctionDots"
+          :key="'dt' + i"
+          class="tvrb-devt-date"
+          :style="{ left: p.x + '%' }"
+        >{{ p.date.slice(5) }}</span>
+      </div>
+      <!-- 图例：收盘口径下方单独一行（不再和日期挤在同一行） -->
+      <div class="tvrb-devt-legend">
+        <i class="tvrb-devt-lg tvrb-devt-lg-near" />逼近
+        <i class="tvrb-devt-lg tvrb-devt-lg-severe" />触发
       </div>
       <div
         v-if="noteText"
@@ -179,7 +179,6 @@ let _seq = 0;
 const windowLabel = computed(() => (props.days === 30 ? '30 日窗口' : '10 日窗口'));
 
 const pointsOf = (key) => ((trend.value && Array.isArray(trend.value[key])) ? trend.value[key] : []);
-const dates = computed(() => ((trend.value && trend.value.dates) || []));
 const thrText = computed(() => (trend.value && trend.value.thrText) || '');
 const noteText = computed(() => (trend.value && trend.value.note) || '');
 
